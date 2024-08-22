@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	log "github.com/pod32g/simple-logger"
@@ -69,6 +70,7 @@ func main() {
 
 	// Dynamically update the log level to DEBUG
 	config.UpdateLogLevel(log.DEBUG)
+	logger = log.ApplyConfig(config) // Reapply the config after changing the level
 
 	// Log again at the updated level
 	logger.Info("Example 4: This is another info message")
@@ -117,4 +119,41 @@ func main() {
 	logger.Debug("This is a debug message")
 	logger.Warn("This is a warning message")
 	logger.Error("This is an error message")
+
+	// Example 7: Using a Custom Formatter
+	// -----------------------------------
+	// This example shows how to use a custom formatter for logging.
+	config = log.DefaultConfig()
+	config.Format = "custom"             // Use custom format
+	config.Custom = &MyCustomFormatter{} // Provide the custom formatter
+
+	logger = log.ApplyConfig(config)
+
+	// Log some messages with the custom formatter
+	logger.Info("Example 7: This is a custom formatted info message")
+	logger.Debug("Example 7: This is a custom formatted debug message")
+}
+
+// MyCustomFormatter is a sample custom formatter for demonstration
+type MyCustomFormatter struct{}
+
+func (f *MyCustomFormatter) Format(level log.LogLevel, message string) string {
+	return fmt.Sprintf("**CUSTOM LOG** [%s] %s\n", logLevelToString(level), message)
+}
+
+func logLevelToString(level log.LogLevel) string {
+	switch level {
+	case log.DEBUG:
+		return "DEBUG"
+	case log.INFO:
+		return "INFO"
+	case log.WARN:
+		return "WARN"
+	case log.ERROR:
+		return "ERROR"
+	case log.FATAL:
+		return "FATAL"
+	default:
+		return "UNKNOWN"
+	}
 }

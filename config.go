@@ -8,13 +8,19 @@ import (
 	"strings"
 )
 
+// CustomFormatter is an interface that users can implement to provide custom log formatting
+type CustomFormatter interface {
+	Format(level LogLevel, message string) string
+}
+
 // LoggerConfig holds all configurable settings for the logger
 type LoggerConfig struct {
-	Level        LogLevel `json:"level"`
-	Output       string   `json:"output"` // Can be "stdout", "stderr", or a filepath
-	Format       string   `json:"format"` // Can be "text" or "json"
-	Filepath     string   `json:"filepath"`
-	EnableCaller bool     `json:"enable_caller"`
+	Level        LogLevel        `json:"level"`
+	Output       string          `json:"output"` // Can be "stdout", "stderr", or a filepath
+	Format       string          `json:"format"` // Can be "text", "json", or "custom"
+	Filepath     string          `json:"filepath"`
+	EnableCaller bool            `json:"enable_caller"`
+	Custom       CustomFormatter `json:"-"` // Custom formatter provided by the user
 }
 
 // DefaultConfig returns a LoggerConfig with default values
@@ -82,6 +88,11 @@ func (config *LoggerConfig) UpdateLogLevel(level LogLevel) {
 	config.Level = level
 }
 
+// UpdateLogFormat allows for dynamically updating the log format at runtime
+func (config *LoggerConfig) UpdateLogFormat(format string) {
+	config.Format = strings.ToLower(format)
+}
+
 // ApplyConfig applies the loaded configuration to the Logger
 func ApplyConfig(config LoggerConfig) *Logger {
 	var output io.Writer = os.Stdout
@@ -97,12 +108,24 @@ func ApplyConfig(config LoggerConfig) *Logger {
 		}
 	}
 
-	logger := NewLogger(output, config.Level)
-
-	// Customize logger based on config
-	if config.Format == "json" {
-		logger.LogMessage = logger.JsonLogMessage
+	// Select the appropriate formatter
+	var formatter Formatter
+	switch config.Format {
+	case "json":
+		formatter = &JSONFormatter{}
+	case "custom":
+		if config.Custom != nil {
+			formatter = config.Custom
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: Custom formatter is nil")
+			formatter = &DefaultFormatter{}
+		}
+	default:
+		formatter = &DefaultFormatter{}
 	}
+
+	// Create and return the logger
+	logger := NewLogger(output, config.Level, formatter)
 
 	return logger
 }

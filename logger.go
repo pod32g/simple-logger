@@ -22,22 +22,24 @@ const (
 	FATAL
 )
 
+// Formatter defines an interface for formatting log messages
+type Formatter interface {
+	Format(level LogLevel, message string) string
+}
+
 // Logger represents a logging instance
 type Logger struct {
-	level      LogLevel
-	output     io.Writer
-	LogMessage func(level LogLevel, message string)
+	level     LogLevel
+	output    io.Writer
+	formatter Formatter
 }
 
 // NewLogger creates a new Logger instance
-func NewLogger(output io.Writer, level LogLevel) *Logger {
+func NewLogger(output io.Writer, level LogLevel, formatter Formatter) *Logger {
 	return &Logger{
-		level:  level,
-		output: output,
-		LogMessage: func(level LogLevel, message string) {
-			// Default log message behavior (plain text)
-			defaultLogMessage(output, level, message)
-		},
+		level:     level,
+		output:    output,
+		formatter: formatter,
 	}
 }
 
@@ -49,6 +51,11 @@ func (l *Logger) SetOutput(output io.Writer) {
 // SetLevel changes the logging level
 func (l *Logger) SetLevel(level LogLevel) {
 	l.level = level
+}
+
+// SetFormatter allows changing the log message format
+func (l *Logger) SetFormatter(formatter Formatter) {
+	l.formatter = formatter
 }
 
 // logLevelToString converts a LogLevel to its string representation
@@ -69,37 +76,31 @@ func logLevelToString(level LogLevel) string {
 	}
 }
 
-// defaultLogMessage logs a message in plain text format if the level is appropriate
-func defaultLogMessage(output io.Writer, level LogLevel, message string) {
-	_, file, line, ok := runtime.Caller(3) // Adjusting caller depth for accurate file and line info
+// DefaultFormatter is a simple text-based log message formatter
+type DefaultFormatter struct{}
+
+func (f *DefaultFormatter) Format(level LogLevel, message string) string {
+	_, file, line, ok := runtime.Caller(4)
 	if !ok {
 		file = "unknown"
 		line = 0
 	}
 	file = filepath.Base(file)
 	now := time.Now().Format("2006-01-02 15:04:05")
-
-	logMsg := fmt.Sprintf("%s - %s:%d - [%s] %s\n", now, file, line, logLevelToString(level), message)
-	fmt.Fprint(output, logMsg)
-
-	if level == FATAL {
-		os.Exit(1)
-	}
+	return fmt.Sprintf("%s - %s:%d - [%s] %s\n", now, file, line, logLevelToString(level), message)
 }
 
-func (l *Logger) JsonLogMessage(level LogLevel, message string) {
-	if level < l.level {
-		return
-	}
+// JSONFormatter formats log messages as JSON
+type JSONFormatter struct{}
 
-	_, file, line, ok := runtime.Caller(2)
+func (f *JSONFormatter) Format(level LogLevel, message string) string {
+	_, file, line, ok := runtime.Caller(4)
 	if !ok {
 		file = "unknown"
 		line = 0
 	}
 	file = filepath.Base(file)
 	now := time.Now().Format(time.RFC3339)
-
 	logEntry := map[string]interface{}{
 		"timestamp": now,
 		"level":     logLevelToString(level),
@@ -107,17 +108,21 @@ func (l *Logger) JsonLogMessage(level LogLevel, message string) {
 		"line":      line,
 		"message":   message,
 	}
-
-	// Marshal the log entry into JSON
 	jsonLog, err := json.Marshal(logEntry)
 	if err != nil {
-		// Fallback to plain text logging in case of JSON marshalling error
-		defaultLogMessage(l.output, level, fmt.Sprintf("Error formatting JSON log: %v, original message: %s", err, message))
+		return fmt.Sprintf(`{"error": "failed to format log message", "message": "%s"}`, message)
+	}
+	return string(jsonLog)
+}
+
+// log logs a message using the current formatter
+func (l *Logger) log(level LogLevel, v ...interface{}) {
+	if level < l.level {
 		return
 	}
-
-	// Write the JSON log entry directly to the output
-	fmt.Fprintln(l.output, string(jsonLog))
+	message := fmt.Sprint(v...)
+	formattedMessage := l.formatter.Format(level, message)
+	fmt.Fprint(l.output, formattedMessage)
 
 	if level == FATAL {
 		os.Exit(1)
@@ -126,35 +131,25 @@ func (l *Logger) JsonLogMessage(level LogLevel, message string) {
 
 // Debug logs a debug message
 func (l *Logger) Debug(v ...interface{}) {
-	if l.level <= DEBUG {
-		l.LogMessage(DEBUG, fmt.Sprint(v...))
-	}
+	l.log(DEBUG, v...)
 }
 
 // Info logs an info message
 func (l *Logger) Info(v ...interface{}) {
-	if l.level <= INFO {
-		l.LogMessage(INFO, fmt.Sprint(v...))
-	}
+	l.log(INFO, v...)
 }
 
 // Warn logs a warning message
 func (l *Logger) Warn(v ...interface{}) {
-	if l.level <= WARN {
-		l.LogMessage(WARN, fmt.Sprint(v...))
-	}
+	l.log(WARN, v...)
 }
 
 // Error logs an error message
 func (l *Logger) Error(v ...interface{}) {
-	if l.level <= ERROR {
-		l.LogMessage(ERROR, fmt.Sprint(v...))
-	}
+	l.log(ERROR, v...)
 }
 
 // Fatal logs a fatal message and exits the application
 func (l *Logger) Fatal(v ...interface{}) {
-	if l.level <= FATAL {
-		l.LogMessage(FATAL, fmt.Sprint(v...))
-	}
+	l.log(FATAL, v...)
 }

@@ -7,14 +7,15 @@
 
 ## Description
 
-**Simple Logger** is a lightweight, flexible logging library for Go (Golang) that supports multiple log levels and customizable output formats, including plain text and JSON. It is designed to be easy to integrate into your projects, with minimal configuration required.
+**Simple Logger** is a lightweight, flexible logging library for Go (Golang) that supports multiple log levels, customizable output formats, including plain text and JSON, and allows for user-defined custom formats. It is designed to be easy to integrate into your projects, with minimal configuration required.
 
 ## Features
 
 - Supports multiple log levels: `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.
 - Customizable output destinations (e.g., stdout, stderr, or files).
-- Supports plain text and JSON log formats.
-- Simple API for setting log levels and outputs.
+- Supports plain text, JSON, and custom log formats.
+- Simple API for setting log levels, outputs, and formats.
+- Dynamic configuration updates at runtime.
 
 ## Installation
 
@@ -39,8 +40,8 @@ import (
 )
 
 func main() {
-	// Create a new logger instance
-	logger := log.NewLogger(os.Stdout, log.INFO)
+	// Create a new logger instance with the default formatter
+	logger := log.NewLogger(os.Stdout, log.INFO, &log.DefaultFormatter{})
 
 	// Log messages at different levels
 	logger.Debug("This is a debug message")
@@ -50,7 +51,8 @@ func main() {
 	logger.Fatal("This is a fatal message") // This will log the message and exit the application
 }
 ```
-#### Example: Using `LoggerConfig`
+
+### Example: Using `LoggerConfig`
 
 You can configure the logger using the `LoggerConfig` struct for more control over logging behavior:
 
@@ -58,18 +60,18 @@ You can configure the logger using the `LoggerConfig` struct for more control ov
 package main
 
 import (
-    "github.com/pod32g/simple-logger"
+    log "github.com/pod32g/simple-logger"
 )
 
 func main() {
-    config := simplelogger.LoggerConfig{
-        Level:        simplelogger.LevelDebug,
+    config := log.LoggerConfig{
+        Level:        log.DEBUG,
         Output:       "stdout",
         Format:       "json",
         EnableCaller: true,
     }
 
-    logger := simplelogger.ApplyConfig(config)
+    logger := log.ApplyConfig(config)
 
     logger.Debug("This is a debug message with caller info.")
     logger.Info("This is an info message in JSON format.")
@@ -77,9 +79,10 @@ func main() {
     logger.Error("This is an error message.")
 }
 ```
+
 ### Configuring Log Levels
 
-You can set the logging level to control the verbosity of the logger. Available levels are `LevelDebug`, `LevelInfo`, `LevelWarn`, and `LevelError`.
+You can set the logging level to control the verbosity of the logger. Available levels are `DEBUG`, `INFO`, `WARN`, `ERROR`, and `FATAL`.
 
 #### Example: Changing Log Level at Runtime
 
@@ -87,17 +90,17 @@ You can set the logging level to control the verbosity of the logger. Available 
 package main
 
 import (
-    "github.com/pod32g/simple-logger"
+    log "github.com/pod32g/simple-logger"
     "os"
 )
 
 func main() {
-    logger := simplelogger.NewLogger(os.Stdout, simplelogger.LevelInfo)
+    logger := log.NewLogger(os.Stdout, log.INFO, &log.DefaultFormatter{})
 
     logger.Info("Initial log level is Info.")
 
     // Changing log level to Debug
-    logger.SetLevel(simplelogger.LevelDebug)
+    logger.SetLevel(log.DEBUG)
     logger.Debug("Now logging at Debug level.")
 }
 ```
@@ -110,22 +113,23 @@ You can log messages to a file by specifying the filename in the `Output` field 
 package main
 
 import (
-    "github.com/pod32g/simple-logger"
+    log "github.com/pod32g/simple-logger"
 )
 
 func main() {
-    config := simplelogger.LoggerConfig{
-        Level:        simplelogger.LevelInfo,
+    config := log.LoggerConfig{
+        Level:        log.INFO,
         Output:       "app.log",  // Specify the filename here
         Format:       "text",
         EnableCaller: false,
     }
 
-    logger := simplelogger.ApplyConfig(config)
+    logger := log.ApplyConfig(config)
 
     logger.Info("This message will be logged to a file.")
 }
 ```
+
 Alternatively, you can change the log output to a file or any other `io.Writer`:
 
 ```go
@@ -144,13 +148,61 @@ func main() {
 	}
 	defer file.Close()
 
-	// Create a new logger instance that writes to the file
-	logger := log.NewLogger(file, log.INFO)
+	// Create a new logger instance that writes to the file with the default formatter
+	logger := log.NewLogger(file, log.INFO, &log.DefaultFormatter{})
 
 	logger.Info("Logging to a file now!")
 }
 ```
 
+### Using a Custom Formatter
+
+You can create and use a custom formatter by implementing the `CustomFormatter` interface:
+
+```go
+package main
+
+import (
+	log "github.com/pod32g/simple-logger"
+	"fmt"
+)
+
+func main() {
+	config := log.DefaultConfig()
+	config.Format = "custom"
+	config.Custom = &MyCustomFormatter{} // Provide your custom formatter
+
+	logger := log.ApplyConfig(config)
+
+	logger.Info("This is an info message with a custom format.")
+	logger.Debug("This is a debug message with a custom format.")
+}
+
+// MyCustomFormatter is a sample custom formatter
+type MyCustomFormatter struct{}
+
+func (f *MyCustomFormatter) Format(level log.LogLevel, message string) string {
+	return fmt.Sprintf("**CUSTOM LOG** [%s] %s
+", logLevelToString(level), message)
+}
+
+func logLevelToString(level log.LogLevel) string {
+	switch level {
+	case log.DEBUG:
+		return "DEBUG"
+	case log.INFO:
+		return "INFO"
+	case log.WARN:
+		return "WARN"
+	case log.ERROR:
+		return "ERROR"
+	case log.FATAL:
+		return "FATAL"
+	default:
+		return "UNKNOWN"
+	}
+}
+```
 
 ## License
 
