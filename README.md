@@ -144,7 +144,7 @@ func main() {
 	// Open a file for logging
 	file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Fatal("Failed to open log file")
+		logger.Fatal("Failed to open log file")
 	}
 	defer file.Close()
 
