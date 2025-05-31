@@ -108,6 +108,30 @@ func TestLogger_CustomFormatter(t *testing.T) {
 	}
 }
 
+// TestLogger_SetOutput verifies that changing the output writer works
+func TestLogger_SetOutput(t *testing.T) {
+	var buf1 bytes.Buffer
+	var buf2 bytes.Buffer
+	logger := log.NewLogger(&buf1, log.INFO, &log.DefaultFormatter{})
+	logger.SetOutput(&buf2)
+	logger.Info("changed")
+	if buf1.Len() != 0 {
+		t.Errorf("expected no output on original writer, got %v", buf1.String())
+	}
+	if buf2.Len() == 0 {
+		t.Errorf("expected output on new writer")
+	}
+}
+
+// TestLogger_SetFormatter verifies that changing the formatter changes output format
+func TestLogger_SetFormatter(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+	logger.SetFormatter(&log.JSONFormatter{})
+	logger.Info("json msg")
+	if !isValidJSON(buf.String()) {
+		t.Errorf("expected JSON formatted message, got %v", buf.String())
+    
 // TestLoadConfigFromEnv verifies that configuration is correctly loaded from
 // environment variables
 func TestLoadConfigFromEnv(t *testing.T) {
