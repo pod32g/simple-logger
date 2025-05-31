@@ -110,7 +110,7 @@ func (f *JSONFormatter) Format(level LogLevel, message string) string {
 	}
 	jsonLog, err := json.Marshal(logEntry)
 	if err != nil {
-		return fmt.Sprintf(`{"error": "failed to format log message", "message": "%s"}\n`, message)
+		jsonLog = []byte(fmt.Sprintf(`{"error": "failed to format log message", "message": "%s"}`, message))
 	}
 	return string(jsonLog) + "\n"
 }
