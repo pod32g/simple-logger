@@ -131,6 +131,28 @@ func TestLogger_SetFormatter(t *testing.T) {
 	logger.Info("json msg")
 	if !isValidJSON(buf.String()) {
 		t.Errorf("expected JSON formatted message, got %v", buf.String())
+    
+// TestLoadConfigFromEnv verifies that configuration is correctly loaded from
+// environment variables
+func TestLoadConfigFromEnv(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "DEBUG")
+	t.Setenv("LOG_OUTPUT", "stderr")
+	t.Setenv("LOG_FORMAT", "JSON")
+	t.Setenv("LOG_ENABLE_CALLER", "false")
+
+	cfg := log.LoadConfigFromEnv()
+
+	if cfg.Level != log.DEBUG {
+		t.Errorf("expected level DEBUG, got %v", cfg.Level)
+	}
+	if cfg.Output != "stderr" {
+		t.Errorf("expected output stderr, got %q", cfg.Output)
+	}
+	if cfg.Format != "json" {
+		t.Errorf("expected format json, got %q", cfg.Format)
+	}
+	if cfg.EnableCaller != false {
+		t.Errorf("expected EnableCaller false, got %v", cfg.EnableCaller)
 	}
 }
 
