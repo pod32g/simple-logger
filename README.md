@@ -182,8 +182,7 @@ func main() {
 type MyCustomFormatter struct{}
 
 func (f *MyCustomFormatter) Format(level log.LogLevel, message string) string {
-	return fmt.Sprintf("**CUSTOM LOG** [%s] %s
-", logLevelToString(level), message)
+	return fmt.Sprintf("**CUSTOM LOG** [%s] %s\n", logLevelToString(level), message)
 }
 
 func logLevelToString(level log.LogLevel) string {
