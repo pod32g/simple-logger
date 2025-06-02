@@ -131,10 +131,12 @@ func TestLogger_SetFormatter(t *testing.T) {
 	logger.Info("json msg")
 	if !isValidJSON(buf.String()) {
 		t.Errorf("expected JSON formatted message, got %v", buf.String())
-    
-// TestLoadConfigFromEnv verifies that configuration is correctly loaded from
-// environment variables
-func TestLoadConfigFromEnv(t *testing.T) {
+	}
+}
+
+// TestLoggerLoadConfigFromEnv verifies that configuration is correctly loaded from
+// environment variables for logger tests
+func TestLoggerLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "DEBUG")
 	t.Setenv("LOG_OUTPUT", "stderr")
 	t.Setenv("LOG_FORMAT", "JSON")
