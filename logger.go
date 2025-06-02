@@ -7,8 +7,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
+
+var builderPool = sync.Pool{
+	New: func() interface{} {
+		return new(strings.Builder)
+	},
+}
 
 // LogLevel represents the severity of the log message
 type LogLevel int
@@ -87,7 +96,21 @@ func (f *DefaultFormatter) Format(level LogLevel, message string) string {
 	}
 	file = filepath.Base(file)
 	now := time.Now().Format("2006-01-02 15:04:05")
-	return fmt.Sprintf("%s - %s:%d - [%s] %s\n", now, file, line, logLevelToString(level), message)
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	b.WriteString(now)
+	b.WriteString(" - ")
+	b.WriteString(file)
+	b.WriteByte(':')
+	b.WriteString(strconv.Itoa(line))
+	b.WriteString(" - [")
+	b.WriteString(logLevelToString(level))
+	b.WriteString("] ")
+	b.WriteString(message)
+	b.WriteByte('\n')
+	s := b.String()
+	builderPool.Put(b)
+	return s
 }
 
 // JSONFormatter formats log messages as JSON
@@ -110,7 +133,13 @@ func (f *JSONFormatter) Format(level LogLevel, message string) string {
 	}
 	jsonLog, err := json.Marshal(logEntry)
 	if err != nil {
-		jsonLog = []byte(fmt.Sprintf(`{"error": "failed to format log message", "message": "%s"}`, message))
+		b := builderPool.Get().(*strings.Builder)
+		b.Reset()
+		b.WriteString(`{"error": "failed to format log message", "message": "`)
+		b.WriteString(message)
+		b.WriteString(`"}`)
+		jsonLog = []byte(b.String())
+		builderPool.Put(b)
 	}
 	return string(jsonLog) + "\n"
 }
@@ -120,7 +149,11 @@ func (l *Logger) log(level LogLevel, v ...interface{}) {
 	if level < l.level {
 		return
 	}
-	message := fmt.Sprint(v...)
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	fmt.Fprint(b, v...)
+	message := b.String()
+	builderPool.Put(b)
 	formattedMessage := l.formatter.Format(level, message)
 	fmt.Fprint(l.output, formattedMessage)
 
