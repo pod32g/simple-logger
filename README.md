@@ -203,6 +203,16 @@ func logLevelToString(level log.LogLevel) string {
 }
 ```
 
+## Benchmarks
+
+The following simple benchmark compares the logger performance with `fmt.Sprintf`.
+
+```bash
+$ go test -bench .
+BenchmarkLoggerDefault-5          371880        2898 ns/op
+BenchmarkFmtSprintf-5            5556867         209.7 ns/op
+```
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
