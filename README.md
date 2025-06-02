@@ -203,6 +203,24 @@ func logLevelToString(level log.LogLevel) string {
 }
 ```
 
+## Benchmarks
+
+The following simple benchmark compares the logger performance with `fmt.Sprintf`.
+Two configurations are shown: the default logger which includes caller
+information, and a faster variant that disables caller lookup.
+
+```bash
+$ go test -bench .
+BenchmarkLoggerDefault-5          663379        1790 ns/op
+BenchmarkLoggerNoCaller-5        1984728         652.2 ns/op
+BenchmarkFmtSprintf-5            8758544         143.9 ns/op
+```
+
+Even without caller information, the logger performs more work than
+`fmt.Sprintf` because it writes to an `io.Writer` and formats timestamps.
+Disabling caller lookup (`EnableCaller: false`) helps reduce overhead when
+performance is critical.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
