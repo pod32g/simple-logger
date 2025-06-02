@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	log "github.com/pod32g/simple-logger"
@@ -142,5 +143,17 @@ func TestApplyConfigFileOutput(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte("file message")) {
 		t.Errorf("expected message in file, got %s", string(data))
+	}
+}
+
+func TestApplyConfigDisableCaller(t *testing.T) {
+	cfg := log.DefaultConfig()
+	cfg.EnableCaller = false
+	logger := log.ApplyConfig(cfg)
+	var buf bytes.Buffer
+	logger.SetOutput(&buf)
+	logger.Info("msg")
+	if strings.Contains(buf.String(), ".go:") {
+		t.Errorf("expected no caller info, got %s", buf.String())
 	}
 }

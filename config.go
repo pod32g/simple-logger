@@ -112,16 +112,16 @@ func ApplyConfig(config LoggerConfig) *Logger {
 	var formatter Formatter
 	switch config.Format {
 	case "json":
-		formatter = &JSONFormatter{}
+		formatter = &JSONFormatter{IncludeCaller: config.EnableCaller}
 	case "custom":
 		if config.Custom != nil {
 			formatter = config.Custom
 		} else {
 			fmt.Fprintf(os.Stderr, "Error: Custom formatter is nil")
-			formatter = &DefaultFormatter{}
+			formatter = &DefaultFormatter{IncludeCaller: config.EnableCaller}
 		}
 	default:
-		formatter = &DefaultFormatter{}
+		formatter = &DefaultFormatter{IncludeCaller: config.EnableCaller}
 	}
 
 	// Create and return the logger

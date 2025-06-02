@@ -1,7 +1,6 @@
 package log
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -67,42 +66,76 @@ func (l *Logger) SetFormatter(formatter Formatter) {
 	l.formatter = formatter
 }
 
+var levelStrings = [...]string{"DEBUG", "INFO", "WARN", "ERROR", "FATAL"}
+
 // logLevelToString converts a LogLevel to its string representation
 func logLevelToString(level LogLevel) string {
-	switch level {
-	case DEBUG:
-		return "DEBUG"
-	case INFO:
-		return "INFO"
-	case WARN:
-		return "WARN"
-	case ERROR:
-		return "ERROR"
-	case FATAL:
-		return "FATAL"
-	default:
-		return "UNKNOWN"
+	if level >= 0 && int(level) < len(levelStrings) {
+		return levelStrings[level]
 	}
+	return "UNKNOWN"
 }
 
 // DefaultFormatter is a simple text-based log message formatter
-type DefaultFormatter struct{}
+// DefaultFormatter is a simple text-based log message formatter.
+// The IncludeCaller flag controls whether file and line information
+// is added to each log entry. Including caller information is
+// convenient for debugging but adds overhead, so it can be disabled
+// for better performance.
+type DefaultFormatter struct {
+	IncludeCaller bool
+}
+
+func appendTwoDigits(b *strings.Builder, val int) {
+	b.WriteByte(byte('0' + val/10))
+	b.WriteByte(byte('0' + val%10))
+}
+
+func appendFourDigits(b *strings.Builder, val int) {
+	b.WriteByte(byte('0' + val/1000))
+	b.WriteByte(byte('0' + val/100%10))
+	b.WriteByte(byte('0' + val/10%10))
+	b.WriteByte(byte('0' + val%10))
+}
+
+func appendTimestamp(b *strings.Builder, t time.Time) {
+	y, m, d := t.Date()
+	hh, mm, ss := t.Clock()
+	appendFourDigits(b, y)
+	b.WriteByte('-')
+	appendTwoDigits(b, int(m))
+	b.WriteByte('-')
+	appendTwoDigits(b, d)
+	b.WriteByte(' ')
+	appendTwoDigits(b, hh)
+	b.WriteByte(':')
+	appendTwoDigits(b, mm)
+	b.WriteByte(':')
+	appendTwoDigits(b, ss)
+}
 
 func (f *DefaultFormatter) Format(level LogLevel, message string) string {
-	_, file, line, ok := runtime.Caller(4)
-	if !ok {
-		file = "unknown"
-		line = 0
+	var file string
+	var line int
+	if f.IncludeCaller {
+		var ok bool
+		_, file, line, ok = runtime.Caller(4)
+		if !ok {
+			file = "unknown"
+			line = 0
+		}
+		file = filepath.Base(file)
 	}
-	file = filepath.Base(file)
-	now := time.Now().Format("2006-01-02 15:04:05")
+
 	b := builderPool.Get().(*strings.Builder)
 	b.Reset()
-	b.WriteString(now)
-	b.WriteString(" - ")
-	b.WriteString(file)
-	b.WriteByte(':')
-	b.WriteString(strconv.Itoa(line))
+	appendTimestamp(b, time.Now())
+	if f.IncludeCaller {
+		b.WriteString(" - ")
+		b.WriteString(file)
+		b.WriteByte(':')
+		b.WriteString(strconv.Itoa(line))
+	}
 	b.WriteString(" - [")
 	b.WriteString(logLevelToString(level))
 	b.WriteString("] ")
@@ -114,34 +147,42 @@ func (f *DefaultFormatter) Format(level LogLevel, message string) string {
 }
 
 // JSONFormatter formats log messages as JSON
-type JSONFormatter struct{}
+// JSONFormatter formats log messages as JSON. The IncludeCaller flag controls
+// whether caller information is included in the output.
+type JSONFormatter struct {
+	IncludeCaller bool
+}
 
 func (f *JSONFormatter) Format(level LogLevel, message string) string {
-	_, file, line, ok := runtime.Caller(4)
-	if !ok {
-		file = "unknown"
-		line = 0
+	var file string
+	var line int
+	if f.IncludeCaller {
+		var ok bool
+		_, file, line, ok = runtime.Caller(4)
+		if !ok {
+			file = "unknown"
+			line = 0
+		}
+		file = filepath.Base(file)
 	}
-	file = filepath.Base(file)
-	now := time.Now().Format(time.RFC3339)
-	logEntry := map[string]interface{}{
-		"timestamp": now,
-		"level":     logLevelToString(level),
-		"file":      file,
-		"line":      line,
-		"message":   message,
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	b.WriteString(`{"timestamp":"`)
+	b.WriteString(time.Now().Format(time.RFC3339))
+	b.WriteString(`","level":"`)
+	b.WriteString(logLevelToString(level))
+	b.WriteString(`","message":`)
+	b.WriteString(strconv.Quote(message))
+	if f.IncludeCaller {
+		b.WriteString(`,"file":`)
+		b.WriteString(strconv.Quote(file))
+		b.WriteString(`,"line":`)
+		b.WriteString(strconv.Itoa(line))
 	}
-	jsonLog, err := json.Marshal(logEntry)
-	if err != nil {
-		b := builderPool.Get().(*strings.Builder)
-		b.Reset()
-		b.WriteString(`{"error": "failed to format log message", "message": "`)
-		b.WriteString(message)
-		b.WriteString(`"}`)
-		jsonLog = []byte(b.String())
-		builderPool.Put(b)
-	}
-	return string(jsonLog) + "\n"
+	b.WriteString("}\n")
+	s := b.String()
+	builderPool.Put(b)
+	return s
 }
 
 // log logs a message using the current formatter
@@ -155,7 +196,7 @@ func (l *Logger) log(level LogLevel, v ...interface{}) {
 	message := b.String()
 	builderPool.Put(b)
 	formattedMessage := l.formatter.Format(level, message)
-	fmt.Fprint(l.output, formattedMessage)
+	io.WriteString(l.output, formattedMessage)
 
 	if level == FATAL {
 		os.Exit(1)
