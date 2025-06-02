@@ -211,9 +211,9 @@ information, and a faster variant that disables caller lookup.
 
 ```bash
 $ go test -bench .
-BenchmarkLoggerDefault-5          663379        1790 ns/op
-BenchmarkLoggerNoCaller-5        1984728         652.2 ns/op
-BenchmarkFmtSprintf-5            8758544         143.9 ns/op
+BenchmarkLoggerDefault-5          682068        1730 ns/op
+BenchmarkLoggerNoCaller-5        2763504         396.3 ns/op
+BenchmarkFmtSprintf-5            8777575         138.9 ns/op
 ```
 
 Even without caller information, the logger performs more work than
