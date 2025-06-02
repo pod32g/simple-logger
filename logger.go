@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -47,6 +46,11 @@ type WriterFormatter interface {
 	FormatTo(level LogLevel, message string, w io.Writer)
 }
 
+// ArgsFormatter allows formatting log arguments directly without building an intermediate string
+type ArgsFormatter interface {
+	FormatArgs(level LogLevel, w io.Writer, v ...interface{})
+}
+
 // Logger represents a logging instance
 type Logger struct {
 	level     LogLevel
@@ -79,6 +83,13 @@ func (l *Logger) SetFormatter(formatter Formatter) {
 }
 
 var levelStrings = [...]string{"DEBUG", "INFO", "WARN", "ERROR", "FATAL"}
+var levelBytes = [...][]byte{
+	[]byte("DEBUG"),
+	[]byte("INFO"),
+	[]byte("WARN"),
+	[]byte("ERROR"),
+	[]byte("FATAL"),
+}
 
 // logLevelToString converts a LogLevel to its string representation
 func logLevelToString(level LogLevel) string {
@@ -183,66 +194,97 @@ func appendTimestampSlice(b []byte, t time.Time) []byte {
 	return b
 }
 
-func (f *DefaultFormatter) formatBuffer(level LogLevel, message string, buf *bytes.Buffer) {
-	var file string
-	var line int
-	if f.IncludeCaller {
-		var ok bool
-		_, file, line, ok = runtime.Caller(4)
-		if !ok {
-			file = "unknown"
-			line = 0
-		}
-		file = filepath.Base(file)
-	}
-
-	appendTimestampBuf(buf, time.Now())
-	if f.IncludeCaller {
-		buf.WriteString(" - ")
-		buf.WriteString(file)
-		buf.WriteByte(':')
-		buf.WriteString(strconv.Itoa(line))
-	}
-	buf.WriteString(" - [")
-	buf.WriteString(logLevelToString(level))
-	buf.WriteString("] ")
-	buf.WriteString(message)
-	buf.WriteByte('\n')
-}
-
 func (f *DefaultFormatter) Format(level LogLevel, message string) string {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	f.formatBuffer(level, message, buf)
+	f.FormatTo(level, message, buf)
 	s := buf.String()
 	bufferPool.Put(buf)
 	return s
 }
 
+func basename(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' || path[i] == '\\' {
+			return path[i+1:]
+		}
+	}
+	return path
+}
+
 func (f *DefaultFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
-	var tmp [64]byte
+	var tmp [128]byte
 	b := tmp[:0]
 	b = appendTimestampSlice(b, time.Now())
-	var file string
-	var line int
 	if f.IncludeCaller {
 		var ok bool
-		_, file, line, ok = runtime.Caller(4)
+		_, file, line, ok := runtime.Caller(4)
 		if !ok {
 			file = "unknown"
 			line = 0
+		} else {
+			file = basename(file)
 		}
-		file = filepath.Base(file)
 		b = append(b, ' ', '-', ' ')
 		b = append(b, file...)
 		b = append(b, ':')
 		b = strconv.AppendInt(b, int64(line), 10)
 	}
 	b = append(b, ' ', '-', ' ', '[')
-	b = append(b, logLevelToString(level)...)
+	if level >= 0 && int(level) < len(levelBytes) {
+		b = append(b, levelBytes[level]...)
+	} else {
+		b = append(b, "UNKNOWN"...)
+	}
 	b = append(b, ']', ' ')
 	w.Write(b)
 	io.WriteString(w, message)
+	w.Write([]byte{'\n'})
+}
+
+// FormatArgs implements ArgsFormatter for DefaultFormatter to avoid intermediate string allocations
+func (f *DefaultFormatter) FormatArgs(level LogLevel, w io.Writer, v ...interface{}) {
+	var tmp [128]byte
+	b := tmp[:0]
+	b = appendTimestampSlice(b, time.Now())
+	if f.IncludeCaller {
+		var ok bool
+		_, file, line, ok := runtime.Caller(4)
+		if !ok {
+			file = "unknown"
+			line = 0
+		} else {
+			file = basename(file)
+		}
+		b = append(b, ' ', '-', ' ')
+		b = append(b, file...)
+		b = append(b, ':')
+		b = strconv.AppendInt(b, int64(line), 10)
+	}
+	b = append(b, ' ', '-', ' ', '[')
+	if level >= 0 && int(level) < len(levelBytes) {
+		b = append(b, levelBytes[level]...)
+	} else {
+		b = append(b, "UNKNOWN"...)
+	}
+	b = append(b, ']', ' ')
+	w.Write(b)
+	for i, val := range v {
+		if i > 0 {
+			w.Write([]byte{' '})
+		}
+		switch t := val.(type) {
+		case string:
+			io.WriteString(w, t)
+		case int:
+			var ibuf [20]byte
+			w.Write(strconv.AppendInt(ibuf[:0], int64(t), 10))
+		case fmt.Stringer:
+			io.WriteString(w, t.String())
+		default:
+			fmt.Fprint(w, val)
+		}
+	}
 	w.Write([]byte{'\n'})
 }
 
@@ -263,7 +305,7 @@ func (f *JSONFormatter) formatBuffer(level LogLevel, message string, buf *bytes.
 			file = "unknown"
 			line = 0
 		}
-		file = filepath.Base(file)
+		file = basename(file)
 	}
 	buf.WriteString(`{"timestamp":"`)
 	buf.WriteString(time.Now().Format(time.RFC3339))
@@ -295,54 +337,71 @@ func (f *JSONFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
 	w.Write(tmp.Bytes())
 }
 
+// FormatArgs implements ArgsFormatter for JSONFormatter. It joins the arguments
+// into a message before delegating to FormatTo.
+func (f *JSONFormatter) FormatArgs(level LogLevel, w io.Writer, v ...interface{}) {
+	msg := buildMessage(v...)
+	var buf bytes.Buffer
+	f.formatBuffer(level, msg, &buf)
+	w.Write(buf.Bytes())
+}
+
 // log logs a message using the current formatter
 func (l *Logger) log(level LogLevel, v ...interface{}) {
 	if level < l.level {
 		return
 	}
-	var message string
-	if len(v) == 1 {
-		switch t := v[0].(type) {
-		case string:
-			message = t
-		case int:
-			message = strconv.Itoa(t)
-		case fmt.Stringer:
-			message = t.String()
-		default:
-			message = fmt.Sprint(t)
-		}
+
+	if af, ok := l.formatter.(ArgsFormatter); ok {
+		af.FormatArgs(level, l.output, v...)
 	} else {
-		b := builderPool.Get().(*strings.Builder)
-		b.Reset()
-		for i, val := range v {
-			if i > 0 {
-				b.WriteByte(' ')
-			}
-			switch t := val.(type) {
-			case string:
-				b.WriteString(t)
-			case int:
-				b.WriteString(strconv.Itoa(t))
-			case fmt.Stringer:
-				b.WriteString(t.String())
-			default:
-				fmt.Fprint(b, val)
-			}
+		message := buildMessage(v...)
+		if wf, ok := l.formatter.(WriterFormatter); ok {
+			wf.FormatTo(level, message, l.output)
+		} else {
+			formattedMessage := l.formatter.Format(level, message)
+			io.WriteString(l.output, formattedMessage)
 		}
-		message = b.String()
-		builderPool.Put(b)
-	}
-	if wf, ok := l.formatter.(WriterFormatter); ok {
-		wf.FormatTo(level, message, l.output)
-	} else {
-		formattedMessage := l.formatter.Format(level, message)
-		io.WriteString(l.output, formattedMessage)
 	}
 
 	if level == FATAL {
 		os.Exit(1)
 	}
+}
+
+func buildMessage(v ...interface{}) string {
+	if len(v) == 1 {
+		switch t := v[0].(type) {
+		case string:
+			return t
+		case int:
+			return strconv.Itoa(t)
+		case fmt.Stringer:
+			return t.String()
+		default:
+			return fmt.Sprint(t)
+		}
+	}
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	for i, val := range v {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		switch t := val.(type) {
+		case string:
+			b.WriteString(t)
+		case int:
+			b.WriteString(strconv.Itoa(t))
+		case fmt.Stringer:
+			b.WriteString(t.String())
+		default:
+			fmt.Fprint(b, val)
+		}
+	}
+	s := b.String()
+	builderPool.Put(b)
+	return s
 }
 
 // Debug logs a debug message
