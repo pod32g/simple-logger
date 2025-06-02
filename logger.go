@@ -1,6 +1,7 @@
 package log
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,12 @@ import (
 var builderPool = sync.Pool{
 	New: func() interface{} {
 		return new(strings.Builder)
+	},
+}
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
 	},
 }
 
@@ -33,6 +40,11 @@ const (
 // Formatter defines an interface for formatting log messages
 type Formatter interface {
 	Format(level LogLevel, message string) string
+}
+
+// WriterFormatter allows writing formatted output directly to an io.Writer
+type WriterFormatter interface {
+	FormatTo(level LogLevel, message string, w io.Writer)
 }
 
 // Logger represents a logging instance
@@ -114,7 +126,64 @@ func appendTimestamp(b *strings.Builder, t time.Time) {
 	appendTwoDigits(b, ss)
 }
 
-func (f *DefaultFormatter) Format(level LogLevel, message string) string {
+func appendTwoDigitsBuf(b *bytes.Buffer, val int) {
+	b.WriteByte(byte('0' + val/10))
+	b.WriteByte(byte('0' + val%10))
+}
+
+func appendFourDigitsBuf(b *bytes.Buffer, val int) {
+	b.WriteByte(byte('0' + val/1000))
+	b.WriteByte(byte('0' + val/100%10))
+	b.WriteByte(byte('0' + val/10%10))
+	b.WriteByte(byte('0' + val%10))
+}
+
+func appendTimestampBuf(b *bytes.Buffer, t time.Time) {
+	y, m, d := t.Date()
+	hh, mm, ss := t.Clock()
+	appendFourDigitsBuf(b, y)
+	b.WriteByte('-')
+	appendTwoDigitsBuf(b, int(m))
+	b.WriteByte('-')
+	appendTwoDigitsBuf(b, d)
+	b.WriteByte(' ')
+	appendTwoDigitsBuf(b, hh)
+	b.WriteByte(':')
+	appendTwoDigitsBuf(b, mm)
+	b.WriteByte(':')
+	appendTwoDigitsBuf(b, ss)
+}
+
+func appendTwoDigitsSlice(b []byte, val int) []byte {
+	return append(b, byte('0'+val/10), byte('0'+val%10))
+}
+
+func appendFourDigitsSlice(b []byte, val int) []byte {
+	return append(b,
+		byte('0'+val/1000),
+		byte('0'+val/100%10),
+		byte('0'+val/10%10),
+		byte('0'+val%10))
+}
+
+func appendTimestampSlice(b []byte, t time.Time) []byte {
+	y, m, d := t.Date()
+	hh, mm, ss := t.Clock()
+	b = appendFourDigitsSlice(b, y)
+	b = append(b, '-')
+	b = appendTwoDigitsSlice(b, int(m))
+	b = append(b, '-')
+	b = appendTwoDigitsSlice(b, d)
+	b = append(b, ' ')
+	b = appendTwoDigitsSlice(b, hh)
+	b = append(b, ':')
+	b = appendTwoDigitsSlice(b, mm)
+	b = append(b, ':')
+	b = appendTwoDigitsSlice(b, ss)
+	return b
+}
+
+func (f *DefaultFormatter) formatBuffer(level LogLevel, message string, buf *bytes.Buffer) {
 	var file string
 	var line int
 	if f.IncludeCaller {
@@ -127,23 +196,54 @@ func (f *DefaultFormatter) Format(level LogLevel, message string) string {
 		file = filepath.Base(file)
 	}
 
-	b := builderPool.Get().(*strings.Builder)
-	b.Reset()
-	appendTimestamp(b, time.Now())
+	appendTimestampBuf(buf, time.Now())
 	if f.IncludeCaller {
-		b.WriteString(" - ")
-		b.WriteString(file)
-		b.WriteByte(':')
-		b.WriteString(strconv.Itoa(line))
+		buf.WriteString(" - ")
+		buf.WriteString(file)
+		buf.WriteByte(':')
+		buf.WriteString(strconv.Itoa(line))
 	}
-	b.WriteString(" - [")
-	b.WriteString(logLevelToString(level))
-	b.WriteString("] ")
-	b.WriteString(message)
-	b.WriteByte('\n')
-	s := b.String()
-	builderPool.Put(b)
+	buf.WriteString(" - [")
+	buf.WriteString(logLevelToString(level))
+	buf.WriteString("] ")
+	buf.WriteString(message)
+	buf.WriteByte('\n')
+}
+
+func (f *DefaultFormatter) Format(level LogLevel, message string) string {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	f.formatBuffer(level, message, buf)
+	s := buf.String()
+	bufferPool.Put(buf)
 	return s
+}
+
+func (f *DefaultFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
+	var tmp [64]byte
+	b := tmp[:0]
+	b = appendTimestampSlice(b, time.Now())
+	var file string
+	var line int
+	if f.IncludeCaller {
+		var ok bool
+		_, file, line, ok = runtime.Caller(4)
+		if !ok {
+			file = "unknown"
+			line = 0
+		}
+		file = filepath.Base(file)
+		b = append(b, ' ', '-', ' ')
+		b = append(b, file...)
+		b = append(b, ':')
+		b = strconv.AppendInt(b, int64(line), 10)
+	}
+	b = append(b, ' ', '-', ' ', '[')
+	b = append(b, logLevelToString(level)...)
+	b = append(b, ']', ' ')
+	w.Write(b)
+	io.WriteString(w, message)
+	w.Write([]byte{'\n'})
 }
 
 // JSONFormatter formats log messages as JSON
@@ -153,7 +253,7 @@ type JSONFormatter struct {
 	IncludeCaller bool
 }
 
-func (f *JSONFormatter) Format(level LogLevel, message string) string {
+func (f *JSONFormatter) formatBuffer(level LogLevel, message string, buf *bytes.Buffer) {
 	var file string
 	var line int
 	if f.IncludeCaller {
@@ -165,24 +265,34 @@ func (f *JSONFormatter) Format(level LogLevel, message string) string {
 		}
 		file = filepath.Base(file)
 	}
-	b := builderPool.Get().(*strings.Builder)
-	b.Reset()
-	b.WriteString(`{"timestamp":"`)
-	b.WriteString(time.Now().Format(time.RFC3339))
-	b.WriteString(`","level":"`)
-	b.WriteString(logLevelToString(level))
-	b.WriteString(`","message":`)
-	b.WriteString(strconv.Quote(message))
+	buf.WriteString(`{"timestamp":"`)
+	buf.WriteString(time.Now().Format(time.RFC3339))
+	buf.WriteString(`","level":"`)
+	buf.WriteString(logLevelToString(level))
+	buf.WriteString(`","message":`)
+	buf.WriteString(strconv.Quote(message))
 	if f.IncludeCaller {
-		b.WriteString(`,"file":`)
-		b.WriteString(strconv.Quote(file))
-		b.WriteString(`,"line":`)
-		b.WriteString(strconv.Itoa(line))
+		buf.WriteString(`,"file":`)
+		buf.WriteString(strconv.Quote(file))
+		buf.WriteString(`,"line":`)
+		buf.WriteString(strconv.Itoa(line))
 	}
-	b.WriteString("}\n")
-	s := b.String()
-	builderPool.Put(b)
+	buf.WriteString("}\n")
+}
+
+func (f *JSONFormatter) Format(level LogLevel, message string) string {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	f.formatBuffer(level, message, buf)
+	s := buf.String()
+	bufferPool.Put(buf)
 	return s
+}
+
+func (f *JSONFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
+	var tmp bytes.Buffer
+	f.formatBuffer(level, message, &tmp)
+	w.Write(tmp.Bytes())
 }
 
 // log logs a message using the current formatter
@@ -192,20 +302,43 @@ func (l *Logger) log(level LogLevel, v ...interface{}) {
 	}
 	var message string
 	if len(v) == 1 {
-		if s, ok := v[0].(string); ok {
-			message = s
-		} else {
-			message = fmt.Sprint(v[0])
+		switch t := v[0].(type) {
+		case string:
+			message = t
+		case int:
+			message = strconv.Itoa(t)
+		case fmt.Stringer:
+			message = t.String()
+		default:
+			message = fmt.Sprint(t)
 		}
 	} else {
 		b := builderPool.Get().(*strings.Builder)
 		b.Reset()
-		fmt.Fprint(b, v...)
+		for i, val := range v {
+			if i > 0 {
+				b.WriteByte(' ')
+			}
+			switch t := val.(type) {
+			case string:
+				b.WriteString(t)
+			case int:
+				b.WriteString(strconv.Itoa(t))
+			case fmt.Stringer:
+				b.WriteString(t.String())
+			default:
+				fmt.Fprint(b, val)
+			}
+		}
 		message = b.String()
 		builderPool.Put(b)
 	}
-	formattedMessage := l.formatter.Format(level, message)
-	io.WriteString(l.output, formattedMessage)
+	if wf, ok := l.formatter.(WriterFormatter); ok {
+		wf.FormatTo(level, message, l.output)
+	} else {
+		formattedMessage := l.formatter.Format(level, message)
+		io.WriteString(l.output, formattedMessage)
+	}
 
 	if level == FATAL {
 		os.Exit(1)
