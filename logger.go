@@ -190,11 +190,20 @@ func (l *Logger) log(level LogLevel, v ...interface{}) {
 	if level < l.level {
 		return
 	}
-	b := builderPool.Get().(*strings.Builder)
-	b.Reset()
-	fmt.Fprint(b, v...)
-	message := b.String()
-	builderPool.Put(b)
+	var message string
+	if len(v) == 1 {
+		if s, ok := v[0].(string); ok {
+			message = s
+		} else {
+			message = fmt.Sprint(v[0])
+		}
+	} else {
+		b := builderPool.Get().(*strings.Builder)
+		b.Reset()
+		fmt.Fprint(b, v...)
+		message = b.String()
+		builderPool.Put(b)
+	}
 	formattedMessage := l.formatter.Format(level, message)
 	io.WriteString(l.output, formattedMessage)
 
