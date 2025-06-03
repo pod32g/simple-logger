@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
+	"time"
 
 	log "github.com/pod32g/simple-logger"
 )
@@ -132,6 +135,26 @@ func main() {
 	// Log some messages with the custom formatter
 	logger.Info("Example 7: This is a custom formatted info message")
 	logger.Debug("Example 7: This is a custom formatted debug message")
+
+	// Example 8: Updating the Log Format at Runtime
+	// --------------------------------------------
+	// Start with the default text format
+	config = log.DefaultConfig()
+	logger = log.ApplyConfig(config)
+	logger.Info("Example 8: this message uses text format")
+
+	// Change to JSON without restarting the application
+	config.UpdateLogFormat("json")
+	logger = log.ApplyConfig(config)
+	logger.Info("Example 8: this message uses JSON format")
+
+	// Example 9: Custom ArgsFormatter for Efficient Logging
+	// -----------------------------------------------------
+	config = log.DefaultConfig()
+	config.Format = "custom"
+	config.Custom = &StreamingFormatter{}
+	logger = log.ApplyConfig(config)
+	logger.Info("Example 9:", "user", 42, "logged in")
 }
 
 // MyCustomFormatter is a sample custom formatter for demonstration
@@ -156,4 +179,24 @@ func logLevelToString(level log.LogLevel) string {
 	default:
 		return "UNKNOWN"
 	}
+}
+
+// StreamingFormatter demonstrates implementing ArgsFormatter for high-performance logging
+type StreamingFormatter struct{}
+
+func (f *StreamingFormatter) Format(level log.LogLevel, message string) string {
+	var sb strings.Builder
+	f.FormatArgs(level, &sb, message)
+	return sb.String()
+}
+
+func (f *StreamingFormatter) FormatArgs(level log.LogLevel, w io.Writer, v ...interface{}) {
+	fmt.Fprintf(w, "%s [%s] ", time.Now().Format("2006-01-02 15:04:05"), logLevelToString(level))
+	for i, val := range v {
+		if i > 0 {
+			fmt.Fprint(w, " ")
+		}
+		fmt.Fprint(w, val)
+	}
+	fmt.Fprint(w, "\n")
 }
