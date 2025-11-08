@@ -19,8 +19,9 @@ Simple Logger is a lightweight logging library for Go that supports multiple log
 - **Structured Fields**: attach key/value pairs via helpers like `String`, `Int`, `Bool`, `Any`, and more.
 - **Field Encoders**: register custom text/JSON rendering for your own types.
 - **Context Awareness**: enrich logs with metadata pulled directly from `context.Context`.
+- **slog Bridge**: drop-in `slog.Handler` that forwards records to simple-logger.
+- **OTLP Hook**: ship entries to collectors by implementing the tiny exporter interface.
 - **Sampling Controls**: throttle noisy log paths with pluggable samplers.
-- **Hooks & Multi-Sinks**: forward entries to additional outputs or custom listeners.
 - **Async Mode**: move formatting off the hot path with buffered workers.
 - **Rotation Support**: integrate with `lumberjack` for size/age based rotation.
 

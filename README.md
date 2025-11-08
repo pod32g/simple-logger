@@ -317,6 +317,31 @@ logger.DisableAsync() // flushes and stops the worker
 The queue drops entries when full if `Drop` is true; otherwise log calls block
 until capacity becomes available.
 
+### Bridging to slog
+
+Use the `bridge/slogbridge` package to route `slog` output into `simple-logger`:
+
+```go
+handler := slogbridge.NewHandler(logger, slog.LevelInfo)
+logger := slog.New(handler)
+logger.Info("hello", slog.String("user", "alice"))
+```
+
+Structured attributes, groups, and context metadata are preserved.
+
+### OTLP Export Hook
+
+Forward log entries to an OTLP collector by attaching the `otlp` hook:
+
+```go
+exp := otlpexporter.New(...)
+hook := otlp.NewHook(exp, otlp.WithServiceName("checkout"))
+logger.AddHook(hook)
+```
+
+The hook converts log entries into OTLP `ResourceLogs`; you can adapt any exporter
+implementing the simple `otlp.Exporter` interface.
+
 ### File Rotation
 
 Built-in rotation mirrors `lumberjack.Logger` options:
