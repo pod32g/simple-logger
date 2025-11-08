@@ -358,6 +358,14 @@ configs <- log.LoggerConfig{Level: log.DEBUG, Output: "stdout", Format: "json"}
 Both helpers reuse `ConfigureLogger` under the hood, so they understand rotation,
 formatters, and other options.
 
+### Additional Examples
+
+Several runnable examples demonstrate integrations beyond the basics:
+
+- `example/http_middleware`: Wrap standard `net/http` handlers with structured request logging.
+- `example/grpc_interceptor`: Attach a unary interceptor that records request IDs, latency, and errors.
+- `example/cli_dynamic`: Small CLI that watches config files and accepts live tweaks from STDIN.
+
 ### Asynchronous Logging
 
 Move formatting/writes off the hot path by enabling the async worker:
