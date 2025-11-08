@@ -31,3 +31,5 @@ go.work
 
 # macOS system files
 .DS_Store
+
+ROADMAP.md
