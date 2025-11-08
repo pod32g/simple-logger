@@ -72,7 +72,7 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 }
 
 func (h *Handler) appendAttr(dst *[]log.Field, attr slog.Attr, groups []string) {
-	value := resolveValue(attr.Value)
+	value := attr.Value.Resolve()
 	key := qualifiedKey(groups, attr.Key)
 
 	switch value.Kind() {
@@ -97,17 +97,6 @@ func (h *Handler) appendAttr(dst *[]log.Field, attr slog.Attr, groups []string) 
 	default:
 		*dst = append(*dst, log.Any(key, value.Any()))
 	}
-}
-
-func resolveValue(v slog.Value) slog.Value {
-	for v.Kind() == slog.KindLogValuer {
-		lv := v.LogValuer()
-		if lv == nil {
-			return slog.StringValue("")
-		}
-		v = lv.LogValue()
-	}
-	return v
 }
 
 func qualifiedKey(groups []string, key string) string {

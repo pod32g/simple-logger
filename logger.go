@@ -765,62 +765,6 @@ type DefaultFormatter struct {
 	TimeLayout    string
 }
 
-func appendTwoDigits(b *strings.Builder, val int) {
-	b.WriteByte(byte('0' + val/10))
-	b.WriteByte(byte('0' + val%10))
-}
-
-func appendFourDigits(b *strings.Builder, val int) {
-	b.WriteByte(byte('0' + val/1000))
-	b.WriteByte(byte('0' + val/100%10))
-	b.WriteByte(byte('0' + val/10%10))
-	b.WriteByte(byte('0' + val%10))
-}
-
-func appendTimestamp(b *strings.Builder, t time.Time) {
-	y, m, d := t.Date()
-	hh, mm, ss := t.Clock()
-	appendFourDigits(b, y)
-	b.WriteByte('-')
-	appendTwoDigits(b, int(m))
-	b.WriteByte('-')
-	appendTwoDigits(b, d)
-	b.WriteByte(' ')
-	appendTwoDigits(b, hh)
-	b.WriteByte(':')
-	appendTwoDigits(b, mm)
-	b.WriteByte(':')
-	appendTwoDigits(b, ss)
-}
-
-func appendTwoDigitsBuf(b *bytes.Buffer, val int) {
-	b.WriteByte(byte('0' + val/10))
-	b.WriteByte(byte('0' + val%10))
-}
-
-func appendFourDigitsBuf(b *bytes.Buffer, val int) {
-	b.WriteByte(byte('0' + val/1000))
-	b.WriteByte(byte('0' + val/100%10))
-	b.WriteByte(byte('0' + val/10%10))
-	b.WriteByte(byte('0' + val%10))
-}
-
-func appendTimestampBuf(b *bytes.Buffer, t time.Time) {
-	y, m, d := t.Date()
-	hh, mm, ss := t.Clock()
-	appendFourDigitsBuf(b, y)
-	b.WriteByte('-')
-	appendTwoDigitsBuf(b, int(m))
-	b.WriteByte('-')
-	appendTwoDigitsBuf(b, d)
-	b.WriteByte(' ')
-	appendTwoDigitsBuf(b, hh)
-	b.WriteByte(':')
-	appendTwoDigitsBuf(b, mm)
-	b.WriteByte(':')
-	appendTwoDigitsBuf(b, ss)
-}
-
 func appendTwoDigitsSlice(b []byte, val int) []byte {
 	return append(b, byte('0'+val/10), byte('0'+val%10))
 }
