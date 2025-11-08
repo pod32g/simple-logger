@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	log "github.com/pod32g/simple-logger"
@@ -43,6 +45,22 @@ func TestLogger_Info(t *testing.T) {
 
 	if !containsLogMessage(buf.String(), "INFO", "Info message") {
 		t.Errorf("Expected 'INFO - Info message' in output, got %v", buf.String())
+	}
+}
+
+func TestLogger_InfoStringAndInfo1(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+
+	logger.InfoString("plain message")
+	logger.Info1("value", 42)
+
+	output := buf.String()
+	if !containsLogMessage(output, "INFO", "plain message") {
+		t.Fatalf("expected plain message, got %q", output)
+	}
+	if !containsLogMessage(output, "INFO", "value") || !strings.Contains(output, "42") {
+		t.Fatalf("expected value message with number, got %q", output)
 	}
 }
 
@@ -134,6 +152,87 @@ func TestLogger_SetFormatter(t *testing.T) {
 	}
 }
 
+func TestLogger_SetSynchronized(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+	if !logger.Synchronized() {
+		t.Fatalf("expected synchronized writes by default")
+	}
+	logger.SetSynchronized(false)
+	if logger.Synchronized() {
+		t.Fatalf("expected unsynchronized writes after disabling")
+	}
+}
+
+func TestLogger_ConcurrentLogging(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{IncludeCaller: false})
+	const goroutines = 8
+	const perGoroutine = 50
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		g := g
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				logger.Info(fmt.Sprintf("message-%d-%d", g, i))
+			}
+		}()
+	}
+	wg.Wait()
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	expectedCount := goroutines * perGoroutine
+	if len(lines) != expectedCount {
+		t.Fatalf("expected %d log lines, got %d", expectedCount, len(lines))
+	}
+
+	seen := make(map[string]bool, expectedCount)
+	for _, line := range lines {
+		parts := strings.SplitN(line, "] ", 2)
+		if len(parts) != 2 {
+			t.Fatalf("unexpected log format: %q", line)
+		}
+		msg := parts[1]
+		if seen[msg] {
+			t.Fatalf("duplicate message detected: %q", msg)
+		}
+		seen[msg] = true
+	}
+
+	for g := 0; g < goroutines; g++ {
+		for i := 0; i < perGoroutine; i++ {
+			msg := fmt.Sprintf("message-%d-%d", g, i)
+			if !seen[msg] {
+				t.Fatalf("missing log message %q", msg)
+			}
+		}
+	}
+}
+
+func TestLoggerCloseReleasesCloser(t *testing.T) {
+	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{})
+	cw := &closingBuffer{}
+	logger.SetOutputWithCloser(cw, cw)
+	if err := logger.Close(); err != nil {
+		t.Fatalf("unexpected error closing logger: %v", err)
+	}
+	if !cw.closed {
+		t.Fatalf("expected closer to be closed")
+	}
+}
+
+func TestLoggerSetOutputReplacesCloser(t *testing.T) {
+	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{})
+	cw := &closingBuffer{}
+	logger.SetOutputWithCloser(cw, cw)
+	logger.SetOutput(io.Discard)
+	if !cw.closed {
+		t.Fatalf("expected previous closer to be closed when output changes")
+	}
+}
+
 // TestLoggerLoadConfigFromEnv verifies that configuration is correctly loaded from
 // environment variables for logger tests
 func TestLoggerLoadConfigFromEnv(t *testing.T) {
@@ -191,6 +290,16 @@ func logLevelToString(level log.LogLevel) string {
 	default:
 		return "UNKNOWN"
 	}
+}
+
+type closingBuffer struct {
+	bytes.Buffer
+	closed bool
+}
+
+func (c *closingBuffer) Close() error {
+	c.closed = true
+	return nil
 }
 
 func TestMain(m *testing.M) {
