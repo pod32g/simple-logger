@@ -23,6 +23,7 @@
 - Context-aware logging helpers to pull request-scoped metadata from `context.Context`.
 - Configurable sampling controls to keep noisy hot paths under control.
 - Hooks and multi-sink outputs for forwarding logs to additional destinations.
+- Optional asynchronous mode with configurable buffers and drop policies.
 
 ## Installation
 
@@ -286,6 +287,39 @@ logger.AddHook(log.HookFunc(func(level log.LogLevel, msg string, fields []log.Fi
 Hooks run after sampling and before the final write, receiving the resolved
 message and structured fields.
 
+### Asynchronous Logging
+
+Move formatting/writes off the hot path by enabling the async worker:
+
+```go
+logger.EnableAsync(log.AsyncOptions{QueueSize: 1024, Drop: true})
+
+// ... later
+logger.DisableAsync() // flushes and stops the worker
+```
+
+The queue drops entries when full if `Drop` is true; otherwise log calls block
+until capacity becomes available.
+
+### File Rotation
+
+Built-in rotation mirrors `lumberjack.Logger` options:
+
+```go
+cfg := log.DefaultConfig()
+cfg.Output = "app.log"
+cfg.Rotation.Enable = true
+cfg.Rotation.MaxSize = 50   // MB
+cfg.Rotation.MaxAge = 14    // days
+cfg.Rotation.MaxBackups = 5
+cfg.Rotation.Compress = true
+
+logger := log.ApplyConfig(cfg)
+```
+
+You can also manage rotation manually by constructing your own `*lumberjack.Logger`
+and passing it to `SetOutputWithCloser`.
+
 ## Managing Logger Lifecycle
 
 Loggers may own resources such as open files. When you create a logger via `ApplyConfig`—or use `SetOutputWithCloser`—always close it when you are finished:
@@ -399,3 +433,42 @@ Happy logging!
 - **Resource management:** `Logger.ApplyConfig` and `SetOutputWithCloser` can own file handles; remember to call `logger.Close()` when you are done to release resources promptly.
 - **Caller information overhead:** Enabling caller reporting requires walking the call stack, which adds latency to every log call. The default configuration leaves caller reporting disabled to avoid this cost.
 - **JSON caller resolution:** `JSONFormatter` now looks up caller information in line with the text formatter, but costs remain higher when caller tracking is enabled.
+
+### Environment Variables
+
+| Variable            | Description                                         |
+|---------------------|-----------------------------------------------------|
+| `LOG_LEVEL`         | Overrides the log level (`DEBUG`..`FATAL`).         |
+| `LOG_OUTPUT`        | `stdout`, `stderr`, or a file path.                 |
+| `LOG_FORMAT`        | `text`, `json`, or `custom`.                        |
+| `LOG_ENABLE_CALLER` | `true`/`false` to include caller information.       |
+| `LOG_SYNC_WRITES`   | `true`/`false` to control write serialization.      |
+| `LOG_COLORIZE`      | `true`/`false` to colorize text formatter output.   |
+| `LOG_TIME_FORMAT`   | Go time layout applied to timestamps (e.g. `2006-01-02T15:04:05Z07:00`). |
+| `LOG_INCLUDE_STACKTRACE` | `true`/`false` to append stacktraces on error/fatal logs. |
+| `LOG_ROTATE`       | `true`/`false` to enable built-in file rotation.         |
+| `LOG_ROTATE_MAX_SIZE` | Max file size in MB before rotation (default 100).    |
+| `LOG_ROTATE_MAX_AGE`  | Max age in days before old files are removed (default 30). |
+| `LOG_ROTATE_MAX_BACKUPS` | Number of old files to keep (default 7).          |
+| `LOG_ROTATE_COMPRESS` | `true`/`false` to gzip rotated logs (default true).   |
+
+### Runtime Reconfiguration
+
+Use `ConfigureLogger` to hot-swap formatter, level, and output without rebuilding loggers:
+
+```go
+logger := log.NewLogger(os.Stdout, log.INFO, &log.DefaultFormatter{})
+
+cfg := log.LoggerConfig{
+    Level:    log.DEBUG,
+    Format:   "json",
+    Output:   "stdout",
+    SyncWrites: true,
+}
+
+if _, err := log.ConfigureLogger(logger, cfg); err != nil {
+    log.NewLogger(os.Stderr, log.ERROR, &log.DefaultFormatter{}).Error("reconfigure failed", err)
+}
+```
+
+Calling `ConfigureLogger(nil, cfg)` is equivalent to `ApplyConfig(cfg)` and returns a brand new logger.

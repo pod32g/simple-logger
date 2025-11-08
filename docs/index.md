@@ -20,6 +20,8 @@ Simple Logger is a lightweight logging library for Go that supports multiple log
 - **Context Awareness**: enrich logs with metadata pulled directly from `context.Context`.
 - **Sampling Controls**: throttle noisy log paths with pluggable samplers.
 - **Hooks & Multi-Sinks**: forward entries to additional outputs or custom listeners.
+- **Async Mode**: move formatting off the hot path with buffered workers.
+- **Rotation Support**: integrate with `lumberjack` for size/age based rotation.
 
 ## Advantages
 
@@ -40,6 +42,27 @@ See the [README](../README.md) for detailed usage examples and benchmark results
 
 ---
 Happy logging!
+
+## Environment Variables
+
+- `LOG_LEVEL`
+- `LOG_OUTPUT`
+- `LOG_FORMAT`
+- `LOG_ENABLE_CALLER`
+- `LOG_SYNC_WRITES`
+- `LOG_COLORIZE`
+- `LOG_TIME_FORMAT`
+- `LOG_INCLUDE_STACKTRACE`
+- `LOG_ROTATE`
+- `LOG_ROTATE_MAX_SIZE`
+- `LOG_ROTATE_MAX_AGE`
+- `LOG_ROTATE_MAX_BACKUPS`
+- `LOG_ROTATE_COMPRESS`
+
+## Runtime Reconfiguration
+
+Use `ConfigureLogger` to swap outputs, formats, or levels at runtime without
+rebuilding loggers.
 
 ## Known Limitations
 

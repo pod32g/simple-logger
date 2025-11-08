@@ -302,6 +302,50 @@ func TestLogger_Hook(t *testing.T) {
 	}
 }
 
+func TestLogger_IncludeStacktrace(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.ERROR, &log.DefaultFormatter{IncludeCaller: false})
+	logger.SetIncludeStacktrace(true)
+
+	logger.Error("stack please")
+
+	output := buf.String()
+	if !strings.Contains(output, "stacktrace") {
+		t.Fatalf("expected stacktrace in output, got %q", output)
+	}
+}
+
+func TestLogger_AsyncLogging(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger.EnableAsync(log.AsyncOptions{QueueSize: 8})
+
+	logger.Info("async message")
+	logger.DisableAsync()
+
+	if !strings.Contains(buf.String(), "async message") {
+		t.Fatalf("expected async message to be flushed, got %q", buf.String())
+	}
+}
+
+func TestLogger_AsyncDrop(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger.EnableAsync(log.AsyncOptions{QueueSize: 1, Drop: true})
+
+	logger.Info("first")
+	logger.Info("second")
+	logger.DisableAsync()
+
+	output := buf.String()
+	if !strings.Contains(output, "first") {
+		t.Fatalf("expected first message to be logged, got %q", output)
+	}
+	if strings.Contains(output, "second") {
+		t.Fatalf("expected second message to be dropped, got %q", output)
+	}
+}
+
 // TestLogger_SetFormatter verifies that changing the formatter changes output format
 func TestLogger_SetFormatter(t *testing.T) {
 	var buf bytes.Buffer

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,12 +113,44 @@ func (s *EveryNSampler) Allow(level LogLevel, message string, fields []Field) bo
 	return val%s.n == 1
 }
 
+// AsyncOptions configure the asynchronous logging mode.
+type AsyncOptions struct {
+	QueueSize int  // buffered channel size; defaults to 1024 when <= 0
+	Drop      bool // drop new entries when queue is full instead of blocking
+}
+
+type logRequest struct {
+	level      LogLevel
+	message    string
+	hasMessage bool
+	fields     []Field
+	args       []interface{}
+}
+
 // HookFunc adapts a function into a Hook.
 type HookFunc func(level LogLevel, message string, fields []Field)
 
 // Fire invokes the underlying function.
 func (f HookFunc) Fire(level LogLevel, message string, fields []Field) {
 	f(level, message, fields)
+}
+
+func cloneFields(fields []Field) []Field {
+	if len(fields) == 0 {
+		return nil
+	}
+	cloned := make([]Field, len(fields))
+	copy(cloned, fields)
+	return cloned
+}
+
+func cloneArgs(args []interface{}) []interface{} {
+	if len(args) == 0 {
+		return nil
+	}
+	cloned := make([]interface{}, len(args))
+	copy(cloned, args)
+	return cloned
 }
 
 // WithField returns a new context with the provided field appended.
@@ -202,16 +235,23 @@ type samplerHolder struct {
 type ContextExtractorFunc func(context.Context) []Field
 
 type Logger struct {
-	level      atomic.Int32
-	output     atomic.Pointer[writerHolder]
-	formatter  atomic.Pointer[formatterHolder]
-	sampler    atomic.Pointer[samplerHolder]
-	hooksMu    sync.RWMutex
-	hooks      []Hook
-	writeMu    sync.Mutex
-	closer     io.Closer
-	syncWrites atomic.Bool
-	extractor  atomic.Pointer[extractorHolder]
+	level             atomic.Int32
+	output            atomic.Pointer[writerHolder]
+	formatter         atomic.Pointer[formatterHolder]
+	sampler           atomic.Pointer[samplerHolder]
+	hooksMu           sync.RWMutex
+	hooks             []Hook
+	writeMu           sync.Mutex
+	closer            io.Closer
+	syncWrites        atomic.Bool
+	extractor         atomic.Pointer[extractorHolder]
+	includeStacktrace atomic.Bool
+
+	asyncMu    sync.Mutex
+	asyncWG    sync.WaitGroup
+	asyncQueue atomic.Value // chan logRequest
+	asyncOpts  AsyncOptions
+	asyncDrops atomic.Int64
 }
 
 // NewLogger creates a new Logger instance
@@ -229,6 +269,8 @@ func NewLogger(output io.Writer, level LogLevel, formatter Formatter) *Logger {
 	logger.syncWrites.Store(true)
 	logger.extractor.Store(&extractorHolder{fn: defaultContextExtractor})
 	logger.sampler.Store((*samplerHolder)(nil))
+	logger.includeStacktrace.Store(false)
+	logger.asyncQueue.Store((chan logRequest)(nil))
 	return logger
 }
 
@@ -294,6 +336,83 @@ func (l *Logger) SetSampler(fn Sampler) {
 		return
 	}
 	l.sampler.Store(&samplerHolder{fn: fn})
+}
+
+// SetIncludeStacktrace toggles automatic stacktrace capture for error/fatal logs.
+func (l *Logger) SetIncludeStacktrace(enabled bool) {
+	l.includeStacktrace.Store(enabled)
+}
+
+// EnableAsync activates asynchronous logging with the provided options.
+func (l *Logger) EnableAsync(opts AsyncOptions) {
+	if opts.QueueSize <= 0 {
+		opts.QueueSize = 1024
+	}
+
+	l.asyncMu.Lock()
+	defer l.asyncMu.Unlock()
+	l.disableAsyncLocked()
+
+	ch := make(chan logRequest, opts.QueueSize)
+	l.asyncOpts = opts
+	l.asyncQueue.Store(ch)
+	l.asyncWG.Add(1)
+	go l.asyncWorker(ch)
+}
+
+// DisableAsync stops asynchronous logging and flushes pending entries.
+func (l *Logger) DisableAsync() {
+	l.asyncMu.Lock()
+	l.disableAsyncLocked()
+	l.asyncMu.Unlock()
+}
+
+func (l *Logger) disableAsyncLocked() {
+	value := l.asyncQueue.Load()
+	if value == nil {
+		return
+	}
+	ch := value.(chan logRequest)
+	if ch == nil {
+		return
+	}
+	l.asyncQueue.Store((chan logRequest)(nil))
+	close(ch)
+	l.asyncWG.Wait()
+}
+
+func (l *Logger) asyncWorker(ch chan logRequest) {
+	defer l.asyncWG.Done()
+	for req := range ch {
+		l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args)
+	}
+}
+
+func (l *Logger) asyncChannel() chan logRequest {
+	value := l.asyncQueue.Load()
+	if value == nil {
+		return nil
+	}
+	ch := value.(chan logRequest)
+	return ch
+}
+
+func (l *Logger) enqueueAsync(req logRequest) bool {
+	ch := l.asyncChannel()
+	if ch == nil {
+		return false
+	}
+	if l.asyncOpts.Drop {
+		select {
+		case ch <- req:
+			return true
+		default:
+			l.asyncDrops.Add(1)
+			return true
+		}
+	}
+	ch <- req
+	return true
 }
 
 // AddHook registers a hook that will be fired for every emitted log entry.
@@ -375,6 +494,16 @@ var levelBytes = [...][]byte{
 	[]byte("FATAL"),
 }
 
+var levelColors = map[LogLevel]string{
+	DEBUG: "\033[36m", // Cyan
+	INFO:  "\033[32m", // Green
+	WARN:  "\033[33m", // Yellow
+	ERROR: "\033[31m", // Red
+	FATAL: "\033[35m", // Magenta
+}
+
+const colorReset = "\033[0m"
+
 const packagePrefix = "github.com/pod32g/simple-logger."
 
 type callerEntry struct {
@@ -401,6 +530,8 @@ func logLevelToString(level LogLevel) string {
 // for better performance.
 type DefaultFormatter struct {
 	IncludeCaller bool
+	Colorize      bool
+	TimeLayout    string
 }
 
 func appendTwoDigits(b *strings.Builder, val int) {
@@ -500,7 +631,12 @@ func basename(path string) string {
 func (f *DefaultFormatter) writeFrame(level LogLevel, w io.Writer, messageWriter func(io.Writer)) {
 	var tmp [128]byte
 	b := tmp[:0]
-	b = appendTimestampSlice(b, time.Now())
+	now := time.Now()
+	if f.TimeLayout != "" {
+		b = append(b, now.Format(f.TimeLayout)...)
+	} else {
+		b = appendTimestampSlice(b, now)
+	}
 	if f.IncludeCaller {
 		file, line := resolveCaller(0)
 		b = append(b, ' ', '-', ' ')
@@ -509,10 +645,20 @@ func (f *DefaultFormatter) writeFrame(level LogLevel, w io.Writer, messageWriter
 		b = strconv.AppendInt(b, int64(line), 10)
 	}
 	b = append(b, ' ', '-', ' ', '[')
+	var color string
+	if f.Colorize {
+		color = levelColors[level]
+		if color != "" {
+			b = append(b, color...)
+		}
+	}
 	if level >= 0 && int(level) < len(levelBytes) {
 		b = append(b, levelBytes[level]...)
 	} else {
 		b = append(b, "UNKNOWN"...)
+	}
+	if color != "" {
+		b = append(b, colorReset...)
 	}
 	b = append(b, ']', ' ')
 	w.Write(b)
@@ -582,11 +728,16 @@ func (f *DefaultFormatter) FormatArgsWithFields(level LogLevel, fields []Field, 
 // whether caller information is included in the output.
 type JSONFormatter struct {
 	IncludeCaller bool
+	TimeLayout    string
 }
 
 func (f *JSONFormatter) formatBuffer(level LogLevel, message string, fields []Field, buf *bytes.Buffer) {
 	buf.WriteString(`{"timestamp":"`)
-	buf.WriteString(time.Now().Format(time.RFC3339))
+	if f.TimeLayout != "" {
+		buf.WriteString(time.Now().Format(f.TimeLayout))
+	} else {
+		buf.WriteString(time.Now().Format(time.RFC3339))
+	}
 	buf.WriteString(`","level":"`)
 	buf.WriteString(logLevelToString(level))
 	buf.WriteString(`","message":`)
@@ -666,17 +817,35 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 		return
 	}
 
-	holder := l.sampler.Load()
-	if holder != nil && holder.fn != nil {
-		effectiveMessage := message
+	if holder := l.sampler.Load(); holder != nil && holder.fn != nil {
+		effective := message
 		if !hasMessage && len(args) > 0 {
-			effectiveMessage = buildMessage(args...)
+			effective = buildMessage(args...)
 		}
-		if !holder.fn.Allow(level, effectiveMessage, fields) {
+		if !holder.fn.Allow(level, effective, fields) {
 			return
 		}
 	}
 
+	if ch := l.asyncChannel(); ch != nil {
+		req := logRequest{
+			level:      level,
+			message:    message,
+			hasMessage: hasMessage,
+			fields:     cloneFields(fields),
+		}
+		if len(args) > 0 {
+			req.args = cloneArgs(args)
+		}
+		if l.enqueueAsync(req) {
+			return
+		}
+	}
+
+	l.logEntrySync(level, message, hasMessage, fields, args)
+}
+
+func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, fields []Field, args []interface{}) {
 	fh := l.formatter.Load()
 	if fh == nil || fh.f == nil {
 		return
@@ -695,6 +864,21 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 		return
 	}
 
+	if l.includeStacktrace.Load() && level >= ERROR {
+		hasStack := false
+		for _, f := range fields {
+			if f.Key == "stacktrace" {
+				hasStack = true
+				break
+			}
+		}
+		if !hasStack {
+			fields = append(fields, String("stacktrace", string(debug.Stack())))
+		}
+	}
+
+	hooks := l.hooksSnapshot()
+
 	write := func(fn func(io.Writer)) {
 		if l.syncWrites.Load() {
 			l.writeMu.Lock()
@@ -712,74 +896,76 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 		}
 	}
 
-	if len(args) > 0 {
-		if len(fields) > 0 {
-			if saf, ok := formatter.(StructuredArgsFormatter); ok {
-				write(func(w io.Writer) {
-					saf.FormatArgsWithFields(level, fields, w, args...)
-				})
-				return
-			}
-		}
+	if len(fields) == 0 && len(args) > 0 {
 		if af, ok := formatter.(ArgsFormatter); ok {
+			if len(hooks) > 0 {
+				hookFields := cloneFields(fields)
+				hookMessage := buildMessage(args...)
+				for _, hook := range hooks {
+					hook.Fire(level, hookMessage, hookFields)
+				}
+			}
 			write(func(w io.Writer) {
 				af.FormatArgs(level, w, args...)
 			})
 			return
 		}
-		message = buildMessage(args...)
-		hasMessage = true
 	}
 
+	resolvedMessage := message
 	if !hasMessage {
-		message = ""
+		if len(args) > 0 {
+			resolvedMessage = buildMessage(args...)
+		} else {
+			resolvedMessage = ""
+		}
 	}
 
-	if hooks := l.hooksSnapshot(); len(hooks) > 0 {
-		var hookFields []Field
-		if len(fields) > 0 {
-			hookFields = make([]Field, len(fields))
-			copy(hookFields, fields)
-		}
+	if len(hooks) > 0 {
+		hookFields := cloneFields(fields)
 		for _, hook := range hooks {
-			hook.Fire(level, message, hookFields)
+			hook.Fire(level, resolvedMessage, hookFields)
 		}
 	}
 
 	if len(fields) > 0 {
 		if sfw, ok := formatter.(StructuredWriterFormatter); ok {
 			write(func(w io.Writer) {
-				sfw.FormatWithFieldsTo(level, message, fields, w)
+				sfw.FormatWithFieldsTo(level, resolvedMessage, fields, w)
 			})
-		} else if sf, ok := formatter.(StructuredFormatter); ok {
-			formatted := sf.FormatWithFields(level, message, fields)
+			return
+		}
+		if sf, ok := formatter.(StructuredFormatter); ok {
+			formatted := sf.FormatWithFields(level, resolvedMessage, fields)
 			write(func(w io.Writer) {
 				io.WriteString(w, formatted)
 			})
-		} else {
-			msgWithFields := appendFieldsToMessage(message, fields)
-			if wf, ok := formatter.(WriterFormatter); ok {
-				write(func(w io.Writer) {
-					wf.FormatTo(level, msgWithFields, w)
-				})
-			} else {
-				formatted := formatter.Format(level, msgWithFields)
-				write(func(w io.Writer) {
-					io.WriteString(w, formatted)
-				})
-			}
+			return
 		}
+
+		msgWithFields := appendFieldsToMessage(resolvedMessage, fields)
+		if wf, ok := formatter.(WriterFormatter); ok {
+			write(func(w io.Writer) {
+				wf.FormatTo(level, msgWithFields, w)
+			})
+			return
+		}
+
+		formatted := formatter.Format(level, msgWithFields)
+		write(func(w io.Writer) {
+			io.WriteString(w, formatted)
+		})
 		return
 	}
 
 	if wf, ok := formatter.(WriterFormatter); ok {
 		write(func(w io.Writer) {
-			wf.FormatTo(level, message, w)
+			wf.FormatTo(level, resolvedMessage, w)
 		})
 		return
 	}
 
-	formatted := formatter.Format(level, message)
+	formatted := formatter.Format(level, resolvedMessage)
 	write(func(w io.Writer) {
 		io.WriteString(w, formatted)
 	})
@@ -787,6 +973,7 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 
 // Close releases any resources owned by the logger, such as open files.
 func (l *Logger) Close() error {
+	l.DisableAsync()
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	if l.closer != nil {
