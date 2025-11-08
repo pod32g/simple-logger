@@ -19,7 +19,10 @@
 - Thread-safe logging: concurrent log calls are serialized to keep entries intact, with an opt-out switch when you control the writer.
 - Optional caller information, disabled by default to minimize overhead.
 - Secure file output: logs written via `ApplyConfig` use `0600` permissions.
-- Hot-path helpers (`InfoString`, `Info1`, etc.) to skip variadic allocations when you already have formatted values.
+- Structured fields via helper functions (`String`, `Int`, `Bool`, `Any`, etc.) for nicer JSON output.
+- Context-aware logging helpers to pull request-scoped metadata from `context.Context`.
+- Configurable sampling controls to keep noisy hot paths under control.
+- Hooks and multi-sink outputs for forwarding logs to additional destinations.
 
 ## Installation
 
@@ -215,6 +218,74 @@ func logLevelToString(level log.LogLevel) string {
 }
 ```
 
+### Structured Logging with Fields
+
+Use the field helpers to emit structured key/value pairs alongside your message.
+The default formatter renders them as `key=value`, while the JSON formatter
+adds them as additional properties.
+
+```go
+logger := log.NewLogger(os.Stdout, log.INFO, &log.JSONFormatter{})
+defer logger.Close()
+
+logger.InfoFields(
+	"user login",
+	log.String("user", "alice"),
+	log.Int("attempt", 3),
+	log.Bool("success", true),
+)
+```
+
+Field helpers include `String`, `Int`, `Int64`, `Uint`, `Float64`, `Bool`,
+`Error`, and `Any` for arbitrary values. You can mix traditional variadic calls
+with structured logging as needed.
+
+### Context-Aware Logging
+
+Attach request metadata to a `context.Context` and have it automatically included
+with every log entry.
+
+```go
+ctx := log.WithFields(context.Background(),
+	log.String("request_id", rid),
+	log.String("user", userID),
+)
+
+logger.InfoContext(ctx, "processing payment",
+	log.String("invoice", invoiceID),
+)
+```
+
+Use `SetContextExtractor` to plug in a custom extractor when you already embed
+structured data in a different context key.
+
+### Sampling & Rate Limiting
+
+Install a sampler when you want to suppress noisy log entries without changing call
+sites. For example, log only every other message:
+
+```go
+logger.SetSampler(log.NewEveryNSampler(2))
+```
+
+Provide your own implementation by satisfying the `Sampler` interface or using
+`SamplerFunc` for quick custom logic.
+
+### Hooks & Multi-Sink Outputs
+
+Forward log entries to additional systems—metrics, alerts, or alternate writers.
+
+```go
+logger.SetOutputs(os.Stdout, auditFile)
+
+logger.AddHook(log.HookFunc(func(level log.LogLevel, msg string, fields []log.Field) {
+	metrics.Inc(level, msg)
+}))
+```
+
+Hooks run after sampling and before the final write, receiving the resolved
+message and structured fields.
+
 ## Managing Logger Lifecycle
 
 Loggers may own resources such as open files. When you create a logger via `ApplyConfig`—or use `SetOutputWithCloser`—always close it when you are finished:
@@ -277,30 +348,29 @@ macOS (Apple M4 Pro, ARM64) using Go 1.22.3. The benchmark suite lives in
 
 ```bash
 $ go test -bench Benchmark -benchmem
-BenchmarkSimpleLogger-14           8764585       120.9 ns/op     200 B/op       5 allocs/op
-BenchmarkSimpleLoggerNoSync-14     9946131       120.9 ns/op     200 B/op       5 allocs/op
-BenchmarkZapSugar-14               6779299       177.5 ns/op      32 B/op       2 allocs/op
-BenchmarkLogrus-14                 1963604       608.5 ns/op     488 B/op      16 allocs/op
-BenchmarkZerolog-14               25052126        47.0 ns/op       0 B/op       0 allocs/op
-BenchmarkLoggerDefault-14           968043      1247 ns/op     535 B/op       7 allocs/op
-BenchmarkLoggerNoCaller-14         9881538       122.6 ns/op     200 B/op       5 allocs/op
-BenchmarkFmtSprintf-14            26704794        45.9 ns/op      39 B/op       2 allocs/op
+BenchmarkSimpleLogger-14           8600590       128.2 ns/op     200 B/op       5 allocs/op
+BenchmarkSimpleLoggerNoSync-14     9375848       127.4 ns/op     200 B/op       5 allocs/op
+BenchmarkZapSugar-14               6678922       180.6 ns/op      32 B/op       2 allocs/op
+BenchmarkLogrus-14                 1917714       624.2 ns/op     488 B/op      16 allocs/op
+BenchmarkZerolog-14               24646645        49.0 ns/op       0 B/op       0 allocs/op
+BenchmarkLoggerDefault-14          1944624       613.4 ns/op     199 B/op       5 allocs/op
+BenchmarkLoggerNoCaller-14         9503491       127.8 ns/op     200 B/op       5 allocs/op
+BenchmarkFmtSprintf-14            25199120        47.2 ns/op      39 B/op       2 allocs/op
 ```
 
 ### Takeaways
 
-- With caller lookup disabled (the default) `simple-logger` now beats the sugared
-  `zap` logger on this workload while keeping a simpler API.
+- With caller lookup disabled (the default) `simple-logger` remains faster than
+  the sugared `zap` logger while keeping a simpler API.
 - Disabling `SyncWrites` still has little effect when writing to `io.Discard`; the
   critical section is short. The toggle is useful only when the destination writer
   itself is the bottleneck.
 - `zerolog` remains the zero-allocation champion for structured logging; use it
   when absolute minimum overhead matters and you are comfortable with its API.
 - `logrus` trades speed for flexibility. Compared to it, `simple-logger` offers
-  a 4–5× throughput advantage while preserving a familiar API.
-- Keeping caller lookup enabled (`LoggerDefault`) multiplies the cost by roughly
-  10× due to stack inspection. Only enable it when you really need file/line
-  metadata.
+  a ~5× throughput advantage while preserving a familiar API.
+- Caller lookup has been optimized but still costs ~5× more than the default path.
+  Enable it only when file/line metadata is required.
 
 Even without caller information, the logger performs more work than
 `fmt.Sprintf` because it writes to an `io.Writer` and formats timestamps. For

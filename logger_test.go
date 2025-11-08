@@ -2,6 +2,7 @@ package log_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,6 +62,135 @@ func TestLogger_InfoStringAndInfo1(t *testing.T) {
 	}
 	if !containsLogMessage(output, "INFO", "value") || !strings.Contains(output, "42") {
 		t.Fatalf("expected value message with number, got %q", output)
+	}
+}
+
+func TestLogger_InfoFieldsDefault(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+
+	logger.InfoFields("user login", log.String("user", "alice"), log.Int("attempt", 3))
+
+	output := buf.String()
+	if !containsLogMessage(output, "INFO", "user login") {
+		t.Fatalf("expected message, got %q", output)
+	}
+	if !strings.Contains(output, "user=alice") || !strings.Contains(output, "attempt=3") {
+		t.Fatalf("expected structured fields, got %q", output)
+	}
+}
+
+func TestLogger_InfoFieldsJSON(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{IncludeCaller: false})
+
+	logger.InfoFields("user login", log.String("user", "alice"), log.Int("attempt", 3))
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &data); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if data["message"] != "user login" {
+		t.Fatalf("expected message field, got %v", data["message"])
+	}
+	if data["user"] != "alice" {
+		t.Fatalf("expected user field, got %v", data["user"])
+	}
+	if attempt, ok := data["attempt"].(float64); !ok || attempt != 3 {
+		t.Fatalf("expected attempt field 3, got %v", data["attempt"])
+	}
+}
+
+func TestLogger_InfoContext(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{IncludeCaller: false})
+
+	ctx := log.WithFields(context.Background(), log.String("request_id", "abc123"))
+	logger.InfoContext(ctx, "ctx message", log.Bool("authenticated", true))
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &data); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if data["message"] != "ctx message" {
+		t.Fatalf("expected message field, got %v", data["message"])
+	}
+	if data["request_id"] != "abc123" {
+		t.Fatalf("expected request_id, got %v", data["request_id"])
+	}
+	if auth, ok := data["authenticated"].(bool); !ok || !auth {
+		t.Fatalf("expected authenticated true, got %v", data["authenticated"])
+	}
+}
+
+func TestLogger_CustomContextExtractor(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+
+	type ctxKey struct{}
+	key := ctxKey{}
+	logger.SetContextExtractor(func(ctx context.Context) []log.Field {
+		if val, ok := ctx.Value(key).(string); ok {
+			return []log.Field{log.String("span", val)}
+		}
+		return nil
+	})
+
+	ctx := context.WithValue(context.Background(), key, "trace-1")
+	logger.InfoContext(ctx, "message")
+
+	output := buf.String()
+	if !strings.Contains(output, "span=trace-1") {
+		t.Fatalf("expected span field in output, got %q", output)
+	}
+}
+
+func TestLogger_ContextExtractorNilDisables(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+
+	ctx := log.WithFields(context.Background(), log.String("request_id", "abc123"))
+	logger.SetContextExtractor(nil)
+	logger.InfoContext(ctx, "message")
+
+	output := buf.String()
+	if strings.Contains(output, "request_id") {
+		t.Fatalf("did not expect request_id when extractor disabled, got %q", output)
+	}
+}
+
+func TestLogger_SamplerDropsEntries(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger.SetSampler(log.SamplerFunc(func(level log.LogLevel, message string, fields []log.Field) bool {
+		return false
+	}))
+
+	logger.Info("should be dropped")
+
+	if buf.Len() != 0 {
+		t.Fatalf("expected sampler to drop entry, got %q", buf.String())
+	}
+}
+
+func TestLogger_EveryNSampler(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger.SetSampler(log.NewEveryNSampler(2))
+
+	logger.Info("first")
+	logger.Info("second")
+	logger.Info("third")
+
+	output := buf.String()
+	if !strings.Contains(output, "first") {
+		t.Fatalf("expected first message to be logged, got %q", output)
+	}
+	if strings.Contains(output, "second") {
+		t.Fatalf("did not expect second message when sampling every 2 entries, got %q", output)
+	}
+	if !strings.Contains(output, "third") {
+		t.Fatalf("expected third message to be logged, got %q", output)
 	}
 }
 
@@ -138,6 +268,37 @@ func TestLogger_SetOutput(t *testing.T) {
 	}
 	if buf2.Len() == 0 {
 		t.Errorf("expected output on new writer")
+	}
+}
+
+func TestLogger_SetOutputs(t *testing.T) {
+	var buf1 bytes.Buffer
+	var buf2 bytes.Buffer
+	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger.SetOutputs(&buf1, &buf2)
+	logger.Info("multi")
+
+	if buf1.Len() == 0 || buf2.Len() == 0 {
+		t.Fatalf("expected output in both buffers, got buf1=%q buf2=%q", buf1.String(), buf2.String())
+	}
+}
+
+func TestLogger_Hook(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+
+	recorded := make([]string, 0)
+	logger.AddHook(log.HookFunc(func(level log.LogLevel, message string, fields []log.Field) {
+		recorded = append(recorded, fmt.Sprintf("%s:%s:%d", logLevelToString(level), message, len(fields)))
+	}))
+
+	logger.InfoFields("hook message", log.String("k", "v"))
+
+	if len(recorded) != 1 {
+		t.Fatalf("expected hook to fire once, got %d", len(recorded))
+	}
+	if recorded[0] != "INFO:hook message:1" {
+		t.Fatalf("unexpected hook payload %q", recorded[0])
 	}
 }
 
