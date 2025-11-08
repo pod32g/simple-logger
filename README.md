@@ -241,6 +241,22 @@ Field helpers include `String`, `Int`, `Int64`, `Uint`, `Float64`, `Bool`,
 `Error`, and `Any` for arbitrary values. You can mix traditional variadic calls
 with structured logging as needed.
 
+#### Custom Field Encoders
+
+Use `RegisterFieldEncoder` to customize how specific types render in text and
+JSON output:
+
+```go
+log.RegisterFieldEncoder[time.Duration](
+    func(d time.Duration) (string, bool) { return d.String(), true },
+    func(d time.Duration) (interface{}, bool) { return d.Seconds(), true },
+)
+
+logger.InfoFields("timed", log.Any("duration", 150*time.Millisecond))
+```
+
+Built-in encoders already cover `time.Duration`, `time.Time`, and `error`.
+
 ### Context-Aware Logging
 
 Attach request metadata to a `context.Context` and have it automatically included

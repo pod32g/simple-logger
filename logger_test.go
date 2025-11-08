@@ -315,6 +315,35 @@ func TestLogger_IncludeStacktrace(t *testing.T) {
 	}
 }
 
+func TestRegisterFieldEncoder(t *testing.T) {
+	type customType struct{ Value string }
+
+	log.RegisterFieldEncoder[customType](
+		func(c customType) (string, bool) { return "custom:" + c.Value, true },
+		func(c customType) (interface{}, bool) { return map[string]string{"value": c.Value}, true },
+	)
+
+	var buf bytes.Buffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger.InfoFields("encoded", log.Any("ct", customType{"foo"}))
+	if !strings.Contains(buf.String(), "custom:foo") {
+		t.Fatalf("expected custom encoder output, got %q", buf.String())
+	}
+
+	buf.Reset()
+	logger.SetFormatter(&log.JSONFormatter{IncludeCaller: false})
+	logger.InfoFields("encoded", log.Any("ct", customType{"bar"}))
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("expected JSON payload: %v", err)
+	}
+	value, ok := payload["ct"].(map[string]interface{})
+	if !ok || value["value"] != "bar" {
+		t.Fatalf("expected JSON custom encoder output, got %v", payload["ct"])
+	}
+}
+
 func TestLogger_AsyncLogging(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
