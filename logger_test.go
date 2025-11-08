@@ -360,7 +360,7 @@ func TestLogger_AsyncLogging(t *testing.T) {
 func TestLogger_AsyncDrop(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 1, Drop: true})
+	logger.EnableAsync(log.AsyncOptions{QueueSize: 1, DropStrategy: log.DropNew})
 
 	logger.Info("first")
 	logger.Info("second")

@@ -77,7 +77,7 @@ func asyncLogging() {
 	logger := log.ApplyConfig(log.DefaultConfig())
 	defer logger.Close()
 
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 64, Drop: true})
+	logger.EnableAsync(log.AsyncOptions{QueueSize: 64, DropStrategy: log.DropNew})
 	for i := 0; i < 5; i++ {
 		logger.InfoString(fmt.Sprintf("async message %d", i))
 	}
