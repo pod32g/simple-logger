@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,160 +13,133 @@ import (
 )
 
 func main() {
-	// Example 1: Basic Logging with Default Configuration
-	// ---------------------------------------------------
-	// This example uses the default configuration, which logs messages in plain text format
-	// to stdout with an INFO log level.
-	config := log.DefaultConfig()
-	logger := log.ApplyConfig(config)
+	fmt.Println("== Basic configuration with color and custom time layout ==")
+	basicLogging()
 
-	// Log some messages using the default configuration
-	logger.Info("Example 1: This is an info message")
-	logger.Debug("Example 1: This debug message will not be shown because the level is set to INFO by default")
-	logger.Warn("Example 1: This is a warning message")
-	logger.Error("Example 1: This is an error message")
+	fmt.Println("\n== Structured fields and context metadata ==")
+	structuredLogging()
 
-	// Example 2: Configuring the Logger Using Environment Variables
-	// -------------------------------------------------------------
-	// This example shows how to configure the logger using environment variables
-	// to change the log level and format.
-	// Set environment variables
-	os.Setenv("LOG_LEVEL", "DEBUG")
-	os.Setenv("LOG_FORMAT", "json")
+	fmt.Println("\n== Sampling and hooks ==")
+	samplingAndHooks()
 
-	// Load configuration from environment variables
-	config = log.LoadConfigFromEnv()
-	logger = log.ApplyConfig(config)
+	fmt.Println("\n== Asynchronous logging ==")
+	asyncLogging()
 
-	// Log some messages with environment variable configuration
-	logger.Info("Example 2: This is an info message")
-	logger.Debug("Example 2: This is a debug message, now visible because the log level is set to DEBUG")
-	logger.Warn("Example 2: This is a warning message in JSON format")
-	logger.Error("Example 2: This is an error message in JSON format")
+	fmt.Println("\n== Rolling file output (lumberjack) ==")
+	rotationExample()
 
-	// Example 3: Logging to a File with JSON Format
-	// ---------------------------------------------
-	// This example demonstrates how to log messages to a file in JSON format.
-	// Custom configuration to log to a file in JSON format
-	config = log.LoggerConfig{
-		Level:        log.DEBUG,
-		Output:       "mylogfile.json", // Log to a file
-		Format:       "json",           // Use JSON format
-		EnableCaller: true,             // Include caller information
-	}
-	logger = log.ApplyConfig(config)
-
-	// Log some messages with file output configuration
-	logger.Info("Example 3: This is an info message")
-	logger.Debug("Example 3: This is a debug message")
-	logger.Warn("Example 3: This is a warning message")
-	logger.Error("Example 3: This is an error message")
-
-	// Example 4: Dynamic Log Level Update at Runtime
-	// ----------------------------------------------
-	// This example shows how to change the log level dynamically at runtime.
-	// Load the default configuration
-	config = log.DefaultConfig()
-	logger = log.ApplyConfig(config)
-
-	// Log at default level (INFO)
-	logger.Info("Example 4: This is an info message")
-	logger.Debug("Example 4: This debug message will not be shown because the level is set to INFO by default")
-
-	// Dynamically update the log level to DEBUG
-	config.UpdateLogLevel(log.DEBUG)
-	logger = log.ApplyConfig(config) // Reapply the config after changing the level
-
-	// Log again at the updated level
-	logger.Info("Example 4: This is another info message")
-	logger.Debug("Example 4: Now this debug message will be shown")
-
-	// Example 5: Loading Configuration from a JSON File
-	// -------------------------------------------------
-	// This example shows how to load the logger configuration from a JSON file.
-	// Assume we have a config.json file with the following content:
-	// {
-	//   "level": "DEBUG",
-	//   "output": "stdout",
-	//   "format": "json",
-	//   "enable_caller": true
-	// }
-	config, err := log.LoadConfigFromFile("config.json")
-	if err != nil {
-		logger.Error("Failed to load config: ", err)
-	}
-
-	logger = log.ApplyConfig(config)
-
-	// Log some messages with JSON file configuration
-	logger.Info("Example 5: This is an info message loaded from JSON config")
-	logger.Debug("Example 5: This is a debug message loaded from JSON config")
-	logger.Warn("Example 5: This is a warning message loaded from JSON config")
-	logger.Error("Example 5: This is an error message loaded from JSON config")
-
-	// Example 6: Logging in JSON Format to stdout
-	// -------------------------------------------
-	// This example demonstrates how to configure the logger to output JSON-formatted
-	// logs directly to stdout. This setup is useful for environments where logs are
-	// streamed to a centralized logging system or consumed by tools like `docker logs`.
-
-	// Custom configuration to log to stdout in JSON format
-	config = log.LoggerConfig{
-		Level:        log.DEBUG, // Set log level to DEBUG to capture all logs
-		Output:       "stdout",  // Log to stdout
-		Format:       "json",    // Use JSON format for log messages
-		EnableCaller: true,      // Include caller information in logs
-	}
-	logger = log.ApplyConfig(config)
-
-	// Log some messages
-	logger.Info("This is an info message")
-	logger.Debug("This is a debug message")
-	logger.Warn("This is a warning message")
-	logger.Error("This is an error message")
-
-	// Example 7: Using a Custom Formatter
-	// -----------------------------------
-	// This example shows how to use a custom formatter for logging.
-	config = log.DefaultConfig()
-	config.Format = "custom"             // Use custom format
-	config.Custom = &MyCustomFormatter{} // Provide the custom formatter
-
-	logger = log.ApplyConfig(config)
-
-	// Log some messages with the custom formatter
-	logger.Info("Example 7: This is a custom formatted info message")
-	logger.Debug("Example 7: This is a custom formatted debug message")
-
-	// Example 8: Updating the Log Format at Runtime
-	// --------------------------------------------
-	// Start with the default text format
-	config = log.DefaultConfig()
-	logger = log.ApplyConfig(config)
-	logger.Info("Example 8: this message uses text format")
-
-	// Change to JSON without restarting the application
-	config.UpdateLogFormat("json")
-	logger = log.ApplyConfig(config)
-	logger.Info("Example 8: this message uses JSON format")
-
-	// Example 9: Custom ArgsFormatter for Efficient Logging
-	// -----------------------------------------------------
-	config = log.DefaultConfig()
-	config.Format = "custom"
-	config.Custom = &StreamingFormatter{}
-	logger = log.ApplyConfig(config)
-	logger.Info("Example 9:", "user", 42, "logged in")
+	fmt.Println("\n== Custom formatter using ArgsFormatter ==")
+	customFormatter()
 }
 
-// MyCustomFormatter is a sample custom formatter for demonstration
-type MyCustomFormatter struct{}
+func basicLogging() {
+	cfg := log.DefaultConfig()
+	cfg.Colorize = true
+	cfg.TimeFormat = time.RFC822
+	cfg.IncludeStacktrace = true
 
-func (f *MyCustomFormatter) Format(level log.LogLevel, message string) string {
-	return fmt.Sprintf("**CUSTOM LOG** [%s] %s\n", logLevelToString(level), message)
+	logger := log.ApplyConfig(cfg)
+	defer logger.Close()
+
+	logger.Info("welcome to simple-logger")
+	logger.SetIncludeStacktrace(true)
+	logger.Error("stacktraces appear automatically on errors")
 }
 
-func logLevelToString(level log.LogLevel) string {
+func structuredLogging() {
+	logger := log.ApplyConfig(log.DefaultConfig())
+	defer logger.Close()
+
+	logger.InfoFields("user login",
+		log.String("user", "alice"),
+		log.Bool("success", true),
+	)
+
+	ctx := log.WithFields(context.Background(), log.String("request_id", "req-123"))
+	logger.InfoContext(ctx, "checkout complete", log.Float64("total", 42.10))
+}
+
+func samplingAndHooks() {
+	logger := log.ApplyConfig(log.DefaultConfig())
+	defer logger.Close()
+
+	logger.SetSampler(log.NewEveryNSampler(3))
+	logger.AddHook(log.HookFunc(func(level log.LogLevel, message string, fields []log.Field) {
+		fmt.Printf("hook -> %s %q fields=%v\n", levelName(level), message, fields)
+	}))
+
+	for i := 1; i <= 6; i++ {
+		logger.InfoFields("periodic heartbeat", log.Int("iteration", i))
+	}
+}
+
+func asyncLogging() {
+	logger := log.ApplyConfig(log.DefaultConfig())
+	defer logger.Close()
+
+	logger.EnableAsync(log.AsyncOptions{QueueSize: 64, Drop: true})
+	for i := 0; i < 5; i++ {
+		logger.InfoString(fmt.Sprintf("async message %d", i))
+	}
+	logger.DisableAsync()
+}
+
+func rotationExample() {
+	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("app-%d.log", time.Now().UnixNano()))
+
+	cfg := log.DefaultConfig()
+	cfg.Output = logPath
+	cfg.Format = "json"
+	cfg.Rotation.Enable = true
+	cfg.Rotation.MaxSize = 1 // MB
+
+	logger := log.ApplyConfig(cfg)
+	defer logger.Close()
+
+	logger.Info("rotation example", log.String("path", logPath))
+	fmt.Printf("rotation example wrote to %s\n", logPath)
+}
+
+func customFormatter() {
+	cfg := log.DefaultConfig()
+	cfg.Format = "custom"
+	cfg.Custom = &StreamingFormatter{}
+
+	logger := log.ApplyConfig(cfg)
+	defer logger.Close()
+
+	logger.Info("custom formatter", log.String("user", "emma"))
+}
+
+// StreamingFormatter demonstrates implementing ArgsFormatter for high-performance logging
+type StreamingFormatter struct{}
+
+func (f *StreamingFormatter) Format(level log.LogLevel, message string) string {
+	return fmt.Sprintf("[%s] %s\n", levelName(level), message)
+}
+
+func (f *StreamingFormatter) FormatArgs(level log.LogLevel, w io.Writer, v ...interface{}) {
+	f.FormatArgsWithFields(level, nil, w, v...)
+}
+
+func (f *StreamingFormatter) FormatWithFields(level log.LogLevel, message string, fields []log.Field) string {
+	var b strings.Builder
+	f.FormatArgsWithFields(level, fields, &b, message)
+	return b.String()
+}
+
+func (f *StreamingFormatter) FormatArgsWithFields(level log.LogLevel, fields []log.Field, w io.Writer, v ...interface{}) {
+	fmt.Fprintf(w, "[%s]", levelName(level))
+	for _, val := range v {
+		fmt.Fprintf(w, " %v", val)
+	}
+	for _, field := range fields {
+		fmt.Fprintf(w, " %s=%v", field.Key, field.Value)
+	}
+	fmt.Fprint(w, "\n")
+}
+
+func levelName(level log.LogLevel) string {
 	switch level {
 	case log.DEBUG:
 		return "DEBUG"
@@ -179,24 +154,4 @@ func logLevelToString(level log.LogLevel) string {
 	default:
 		return "UNKNOWN"
 	}
-}
-
-// StreamingFormatter demonstrates implementing ArgsFormatter for high-performance logging
-type StreamingFormatter struct{}
-
-func (f *StreamingFormatter) Format(level log.LogLevel, message string) string {
-	var sb strings.Builder
-	f.FormatArgs(level, &sb, message)
-	return sb.String()
-}
-
-func (f *StreamingFormatter) FormatArgs(level log.LogLevel, w io.Writer, v ...interface{}) {
-	fmt.Fprintf(w, "%s [%s] ", time.Now().Format("2006-01-02 15:04:05"), logLevelToString(level))
-	for i, val := range v {
-		if i > 0 {
-			fmt.Fprint(w, " ")
-		}
-		fmt.Fprint(w, val)
-	}
-	fmt.Fprint(w, "\n")
 }

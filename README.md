@@ -382,14 +382,14 @@ macOS (Apple M4 Pro, ARM64) using Go 1.22.3. The benchmark suite lives in
 
 ```bash
 $ go test -bench Benchmark -benchmem
-BenchmarkSimpleLogger-14           8600590       128.2 ns/op     200 B/op       5 allocs/op
-BenchmarkSimpleLoggerNoSync-14     9375848       127.4 ns/op     200 B/op       5 allocs/op
-BenchmarkZapSugar-14               6678922       180.6 ns/op      32 B/op       2 allocs/op
-BenchmarkLogrus-14                 1917714       624.2 ns/op     488 B/op      16 allocs/op
-BenchmarkZerolog-14               24646645        49.0 ns/op       0 B/op       0 allocs/op
-BenchmarkLoggerDefault-14          1944624       613.4 ns/op     199 B/op       5 allocs/op
-BenchmarkLoggerNoCaller-14         9503491       127.8 ns/op     200 B/op       5 allocs/op
-BenchmarkFmtSprintf-14            25199120        47.2 ns/op      39 B/op       2 allocs/op
+BenchmarkSimpleLogger-14           8703645       134.4 ns/op     200 B/op       5 allocs/op
+BenchmarkSimpleLoggerNoSync-14     9231789       131.5 ns/op     200 B/op       5 allocs/op
+BenchmarkZapSugar-14               6581017       185.1 ns/op      32 B/op       2 allocs/op
+BenchmarkLogrus-14                 1958559       600.5 ns/op     488 B/op      16 allocs/op
+BenchmarkZerolog-14               25791891        45.66 ns/op      0 B/op       0 allocs/op
+BenchmarkLoggerDefault-14          1480904       813.6 ns/op     199 B/op       5 allocs/op
+BenchmarkLoggerNoCaller-14         9050629       134.5 ns/op     200 B/op       5 allocs/op
+BenchmarkFmtSprintf-14            27270996        44.97 ns/op      39 B/op       2 allocs/op
 ```
 
 ### Takeaways

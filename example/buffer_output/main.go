@@ -3,20 +3,23 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
 
 	log "github.com/pod32g/simple-logger"
 )
 
 func main() {
 	logger := log.ApplyConfig(log.DefaultConfig())
+	defer logger.Close()
 
 	var buf bytes.Buffer
-	logger.SetOutput(&buf)
-	logger.Info("first message written to buffer")
+	logger.SetOutputs(os.Stdout, &buf)
 
-	logger.SetLevel(log.DEBUG)
-	logger.SetFormatter(&log.JSONFormatter{})
-	logger.Debug("second message as JSON")
+	logger.Info("written to stdout and buffer")
+	logger.EnableAsync(log.AsyncOptions{QueueSize: 8, Drop: true})
+	logger.InfoString("buffer-only message")
+	logger.DisableAsync()
 
+	fmt.Println("captured buffer:")
 	fmt.Print(buf.String())
 }
