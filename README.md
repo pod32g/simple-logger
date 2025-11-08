@@ -24,6 +24,7 @@
 - Configurable sampling controls to keep noisy hot paths under control.
 - Hooks and multi-sink outputs for forwarding logs to additional destinations.
 - Optional asynchronous mode with configurable buffers and drop policies.
+- Hook filters and async stats so you can limit callbacks and monitor queue health.
 
 ## Installation
 
@@ -303,12 +304,35 @@ logger.AddHook(log.HookFunc(func(level log.LogLevel, msg string, fields []log.Fi
 Hooks run after sampling and before the final write, receiving the resolved
 message and structured fields.
 
+### Hook Filters & Async Stats
+
+Limit callbacks to specific levels or field predicates using hook options:
+
+```go
+logger.AddHook(metricsHook,
+    log.WithHookLevels(log.ERROR, log.FATAL),
+    log.WithHookFilter(func(level log.LogLevel, message string, fields []log.Field) bool {
+        return strings.Contains(message, "payment")
+    }),
+)
+```
+
+Async helpers expose queue metrics:
+
+```go
+stats := logger.AsyncStats()
+fmt.Printf("length=%d dropped=%d\n", stats.QueueLength, stats.Dropped)
+```
+
+Use `SetDropStrategy` to switch between dropping new entries, dropping oldest, or
+blocking when the queue is full.
+
 ### Asynchronous Logging
 
 Move formatting/writes off the hot path by enabling the async worker:
 
 ```go
-logger.EnableAsync(log.AsyncOptions{QueueSize: 1024, Drop: true})
+logger.EnableAsync(log.AsyncOptions{QueueSize: 1024, DropStrategy: log.DropNew})
 
 // ... later
 logger.DisableAsync() // flushes and stops the worker

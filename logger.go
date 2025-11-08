@@ -17,16 +17,69 @@ import (
 	"time"
 )
 
-var builderPool = sync.Pool{
-	New: func() interface{} {
-		return new(strings.Builder)
-	},
+var (
+	builderPool = sync.Pool{
+		New: func() interface{} {
+			return new(strings.Builder)
+		},
+	}
+
+	bufferPool = sync.Pool{
+		New: func() interface{} {
+			return new(bytes.Buffer)
+		},
+	}
+)
+
+// DropStrategy defines behavior when the async queue is full.
+type DropStrategy int
+
+const (
+	DropNew DropStrategy = iota
+	DropOldest
+	BlockWhenFull
+)
+
+// AsyncStats reports async queue usage.
+type AsyncStats struct {
+	QueueSize   int
+	QueueLength int
+	Dropped     int64
 }
 
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
+// HookOption configures hook registration.
+type HookOption interface {
+	apply(*hookRegistration)
+}
+
+type hookOptionFunc func(*hookRegistration)
+
+func (fn hookOptionFunc) apply(h *hookRegistration) { fn(h) }
+
+// WithHookLevels limits a hook to specific levels.
+func WithHookLevels(levels ...LogLevel) HookOption {
+	set := make(map[LogLevel]struct{}, len(levels))
+	for _, lvl := range levels {
+		set[lvl] = struct{}{}
+	}
+	return hookOptionFunc(func(h *hookRegistration) { h.levels = set })
+}
+
+// WithHookFilter provides a predicate to decide whether to fire a hook.
+func WithHookFilter(fn func(LogLevel, string, []Field) bool) HookOption {
+	return hookOptionFunc(func(h *hookRegistration) { h.filter = fn })
+}
+
+// WithHookFieldsFilter filters based on fields.
+func WithHookFieldsFilter(fn func([]Field) bool) HookOption {
+	return hookOptionFunc(func(h *hookRegistration) { h.fieldsFilter = fn })
+}
+
+type hookRegistration struct {
+	target       Hook
+	levels       map[LogLevel]struct{}
+	filter       func(LogLevel, string, []Field) bool
+	fieldsFilter func([]Field) bool
 }
 
 // Field represents a structured logging key/value pair.
@@ -159,6 +212,12 @@ type Hook interface {
 	Fire(level LogLevel, message string, fields []Field)
 }
 
+type HookFunc func(level LogLevel, message string, fields []Field)
+
+func (f HookFunc) Fire(level LogLevel, message string, fields []Field) {
+	f(level, message, fields)
+}
+
 // StructuredFormatter allows formatters to customize field rendering.
 type StructuredFormatter interface {
 	FormatWithFields(level LogLevel, message string, fields []Field) string
@@ -214,8 +273,8 @@ func (s *EveryNSampler) Allow(level LogLevel, message string, fields []Field) bo
 
 // AsyncOptions configure the asynchronous logging mode.
 type AsyncOptions struct {
-	QueueSize int  // buffered channel size; defaults to 1024 when <= 0
-	Drop      bool // drop new entries when queue is full instead of blocking
+	QueueSize    int
+	DropStrategy DropStrategy
 }
 
 type logRequest struct {
@@ -227,13 +286,6 @@ type logRequest struct {
 }
 
 // HookFunc adapts a function into a Hook.
-type HookFunc func(level LogLevel, message string, fields []Field)
-
-// Fire invokes the underlying function.
-func (f HookFunc) Fire(level LogLevel, message string, fields []Field) {
-	f(level, message, fields)
-}
-
 func cloneFields(fields []Field) []Field {
 	if len(fields) == 0 {
 		return nil
@@ -339,7 +391,7 @@ type Logger struct {
 	formatter         atomic.Pointer[formatterHolder]
 	sampler           atomic.Pointer[samplerHolder]
 	hooksMu           sync.RWMutex
-	hooks             []Hook
+	hooks             []hookRegistration
 	writeMu           sync.Mutex
 	closer            io.Closer
 	syncWrites        atomic.Bool
@@ -447,6 +499,9 @@ func (l *Logger) EnableAsync(opts AsyncOptions) {
 	if opts.QueueSize <= 0 {
 		opts.QueueSize = 1024
 	}
+	if opts.DropStrategy != DropNew && opts.DropStrategy != DropOldest && opts.DropStrategy != BlockWhenFull {
+		opts.DropStrategy = DropNew
+	}
 
 	l.asyncMu.Lock()
 	defer l.asyncMu.Unlock()
@@ -457,6 +512,13 @@ func (l *Logger) EnableAsync(opts AsyncOptions) {
 	l.asyncQueue.Store(ch)
 	l.asyncWG.Add(1)
 	go l.asyncWorker(ch)
+}
+
+// SetDropStrategy changes the behaviour when the async queue is full.
+func (l *Logger) SetDropStrategy(strategy DropStrategy) {
+	l.asyncMu.Lock()
+	l.asyncOpts.DropStrategy = strategy
+	l.asyncMu.Unlock()
 }
 
 // DisableAsync stops asynchronous logging and flushes pending entries.
@@ -487,40 +549,28 @@ func (l *Logger) asyncWorker(ch chan logRequest) {
 	}
 }
 
-func (l *Logger) asyncChannel() chan logRequest {
-	value := l.asyncQueue.Load()
-	if value == nil {
+func (l *Logger) hooksSnapshot() []hookRegistration {
+	l.hooksMu.RLock()
+	defer l.hooksMu.RUnlock()
+	if len(l.hooks) == 0 {
 		return nil
 	}
-	ch := value.(chan logRequest)
-	return ch
-}
-
-func (l *Logger) enqueueAsync(req logRequest) bool {
-	ch := l.asyncChannel()
-	if ch == nil {
-		return false
-	}
-	if l.asyncOpts.Drop {
-		select {
-		case ch <- req:
-			return true
-		default:
-			l.asyncDrops.Add(1)
-			return true
-		}
-	}
-	ch <- req
-	return true
+	snapshot := make([]hookRegistration, len(l.hooks))
+	copy(snapshot, l.hooks)
+	return snapshot
 }
 
 // AddHook registers a hook that will be fired for every emitted log entry.
-func (l *Logger) AddHook(h Hook) {
+func (l *Logger) AddHook(h Hook, opts ...HookOption) {
 	if h == nil {
 		return
 	}
+	reg := hookRegistration{target: h}
+	for _, opt := range opts {
+		opt.apply(&reg)
+	}
 	l.hooksMu.Lock()
-	l.hooks = append(l.hooks, h)
+	l.hooks = append(l.hooks, reg)
 	l.hooksMu.Unlock()
 }
 
@@ -571,17 +621,6 @@ func (l *Logger) mergeContextFields(ctx context.Context, fields []Field) []Field
 	combined = append(combined, ctxFields...)
 	combined = append(combined, fields...)
 	return combined
-}
-
-func (l *Logger) hooksSnapshot() []Hook {
-	l.hooksMu.RLock()
-	defer l.hooksMu.RUnlock()
-	if len(l.hooks) == 0 {
-		return nil
-	}
-	snapshot := make([]Hook, len(l.hooks))
-	copy(snapshot, l.hooks)
-	return snapshot
 }
 
 var levelStrings = [...]string{"DEBUG", "INFO", "WARN", "ERROR", "FATAL"}
@@ -997,13 +1036,6 @@ func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, f
 
 	if len(fields) == 0 && len(args) > 0 {
 		if af, ok := formatter.(ArgsFormatter); ok {
-			if len(hooks) > 0 {
-				hookFields := cloneFields(fields)
-				hookMessage := buildMessage(args...)
-				for _, hook := range hooks {
-					hook.Fire(level, hookMessage, hookFields)
-				}
-			}
 			write(func(w io.Writer) {
 				af.FormatArgs(level, w, args...)
 			})
@@ -1021,9 +1053,19 @@ func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, f
 	}
 
 	if len(hooks) > 0 {
-		hookFields := cloneFields(fields)
-		for _, hook := range hooks {
-			hook.Fire(level, resolvedMessage, hookFields)
+		for _, reg := range hooks {
+			if reg.levels != nil {
+				if _, ok := reg.levels[level]; !ok {
+					continue
+				}
+			}
+			if reg.fieldsFilter != nil && !reg.fieldsFilter(fields) {
+				continue
+			}
+			if reg.filter != nil && !reg.filter(level, resolvedMessage, fields) {
+				continue
+			}
+			reg.target.Fire(level, resolvedMessage, fields)
 		}
 	}
 
@@ -1450,4 +1492,59 @@ func init() {
 		func(err error) (string, bool) { return err.Error(), true },
 		func(err error) (interface{}, bool) { return err.Error(), true },
 	)
+}
+
+func (l *Logger) asyncChannel() chan logRequest {
+	if ch, _ := l.asyncQueue.Load().(chan logRequest); ch != nil {
+		return ch
+	}
+	return nil
+}
+
+func (l *Logger) enqueueAsync(req logRequest) bool {
+	ch := l.asyncChannel()
+	if ch == nil {
+		return false
+	}
+	switch l.asyncOpts.DropStrategy {
+	case DropOldest:
+		select {
+		case ch <- req:
+			return true
+		default:
+			select {
+			case <-ch:
+				l.asyncDrops.Add(1)
+			default:
+			}
+			select {
+			case ch <- req:
+			default:
+			}
+			return true
+		}
+	case BlockWhenFull:
+		ch <- req
+		return true
+	default:
+		select {
+		case ch <- req:
+			return true
+		default:
+			l.asyncDrops.Add(1)
+			return true
+		}
+	}
+}
+
+// AsyncStats returns counters for the async queue.
+func (l *Logger) AsyncStats() AsyncStats {
+	ch := l.asyncChannel()
+	stats := AsyncStats{}
+	if ch != nil {
+		stats.QueueSize = cap(ch)
+		stats.QueueLength = len(ch)
+	}
+	stats.Dropped = l.asyncDrops.Load()
+	return stats
 }
