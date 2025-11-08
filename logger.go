@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -54,6 +55,104 @@ func Error(key string, err error) Field {
 	return Field{Key: key, Value: err.Error()}
 }
 func Any(key string, value interface{}) Field { return Field{Key: key, Value: value} }
+
+// FieldEncoder allows custom text/JSON rendering for specific value types.
+type FieldEncoder struct {
+	EncodeText func(interface{}) (string, bool)
+	EncodeJSON func(interface{}) (interface{}, bool)
+}
+
+type fieldEncoder struct {
+	text func(interface{}) (string, bool)
+	json func(interface{}) (interface{}, bool)
+}
+
+var (
+	encoderMu     sync.RWMutex
+	fieldEncoders = make(map[reflect.Type]fieldEncoder)
+)
+
+// RegisterFieldEncoder attaches custom text/JSON encoders for a type.
+// Pass nil for either function to fall back to default behavior.
+func RegisterFieldEncoder[T any](text func(T) (string, bool), json func(T) (interface{}, bool)) {
+	encoderMu.Lock()
+	defer encoderMu.Unlock()
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	fieldEncoders[t] = fieldEncoder{
+		text: wrapTextEncoder(text),
+		json: wrapJSONEncoder(json),
+	}
+}
+
+func wrapTextEncoder[T any](fn func(T) (string, bool)) func(interface{}) (string, bool) {
+	if fn == nil {
+		return nil
+	}
+	return func(v interface{}) (string, bool) {
+		val, ok := v.(T)
+		if !ok {
+			return "", false
+		}
+		return fn(val)
+	}
+}
+
+func wrapJSONEncoder[T any](fn func(T) (interface{}, bool)) func(interface{}) (interface{}, bool) {
+	if fn == nil {
+		return nil
+	}
+	return func(v interface{}) (interface{}, bool) {
+		val, ok := v.(T)
+		if !ok {
+			return nil, false
+		}
+		return fn(val)
+	}
+}
+
+func lookupFieldEncoder(val interface{}) (fieldEncoder, interface{}, bool) {
+	if val == nil {
+		return fieldEncoder{}, nil, false
+	}
+	t := reflect.TypeOf(val)
+	encoderMu.RLock()
+	enc, ok := fieldEncoders[t]
+	if ok {
+		encoderMu.RUnlock()
+		return enc, val, true
+	}
+	if t.Kind() == reflect.Pointer {
+		rv := reflect.ValueOf(val)
+		if rv.IsNil() {
+			encoderMu.RUnlock()
+			return fieldEncoder{}, nil, false
+		}
+		t = t.Elem()
+		enc, ok = fieldEncoders[t]
+		if ok {
+			encoderMu.RUnlock()
+			return enc, rv.Elem().Interface(), true
+		}
+	}
+	encoderMu.RUnlock()
+	return fieldEncoder{}, nil, false
+}
+
+func encodeTextWithRegistry(val interface{}) (string, bool) {
+	enc, v, ok := lookupFieldEncoder(val)
+	if !ok || enc.text == nil {
+		return "", false
+	}
+	return enc.text(v)
+}
+
+func encodeJSONWithRegistry(val interface{}) (interface{}, bool) {
+	enc, v, ok := lookupFieldEncoder(val)
+	if !ok || enc.json == nil {
+		return nil, false
+	}
+	return enc.json(v)
+}
 
 // Hook observes log events.
 type Hook interface {
@@ -1082,6 +1181,10 @@ func writeFieldsText(w io.Writer, fields []Field, prefixSpace bool) {
 }
 
 func writeFieldValueText(w io.Writer, val interface{}) {
+	if s, ok := encodeTextWithRegistry(val); ok {
+		io.WriteString(w, s)
+		return
+	}
 	switch v := val.(type) {
 	case string:
 		io.WriteString(w, v)
@@ -1128,8 +1231,19 @@ func appendJSONFields(buf *bytes.Buffer, fields []Field) {
 }
 
 func appendJSONValue(buf *bytes.Buffer, val interface{}) {
-	if val == nil {
-		buf.WriteString("null")
+	if encoded, ok := encodeJSONWithRegistry(val); ok {
+		switch v := encoded.(type) {
+		case string:
+			buf.WriteString(strconv.Quote(v))
+		case []byte:
+			buf.WriteString(strconv.Quote(string(v)))
+		default:
+			if data, err := json.Marshal(v); err == nil {
+				buf.Write(data)
+			} else {
+				buf.WriteString(strconv.Quote(fmt.Sprint(v)))
+			}
+		}
 		return
 	}
 	switch v := val.(type) {
@@ -1321,4 +1435,19 @@ func (l *Logger) FatalFields(message string, fields ...Field) {
 // FatalContext logs a fatal message with context-derived fields and exits the application.
 func (l *Logger) FatalContext(ctx context.Context, message string, fields ...Field) {
 	l.logEntry(FATAL, message, true, l.mergeContextFields(ctx, fields), nil)
+}
+
+func init() {
+	RegisterFieldEncoder[time.Duration](
+		func(d time.Duration) (string, bool) { return d.String(), true },
+		func(d time.Duration) (interface{}, bool) { return d.String(), true },
+	)
+	RegisterFieldEncoder[time.Time](
+		func(t time.Time) (string, bool) { return t.Format(time.RFC3339), true },
+		func(t time.Time) (interface{}, bool) { return t.Format(time.RFC3339), true },
+	)
+	RegisterFieldEncoder[error](
+		func(err error) (string, bool) { return err.Error(), true },
+		func(err error) (interface{}, bool) { return err.Error(), true },
+	)
 }

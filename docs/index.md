@@ -17,6 +17,7 @@ Simple Logger is a lightweight logging library for Go that supports multiple log
 - **Thread-Safe Logging**: concurrent writers are serialized to keep log entries intact.
 - **Secure File Output**: logs written via configuration use `0600` permissions by default.
 - **Structured Fields**: attach key/value pairs via helpers like `String`, `Int`, `Bool`, `Any`, and more.
+- **Field Encoders**: register custom text/JSON rendering for your own types.
 - **Context Awareness**: enrich logs with metadata pulled directly from `context.Context`.
 - **Sampling Controls**: throttle noisy log paths with pluggable samplers.
 - **Hooks & Multi-Sinks**: forward entries to additional outputs or custom listeners.
