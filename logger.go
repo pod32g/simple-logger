@@ -273,8 +273,10 @@ func (s *EveryNSampler) Allow(level LogLevel, message string, fields []Field) bo
 
 // AsyncOptions configure the asynchronous logging mode.
 type AsyncOptions struct {
-	QueueSize    int
-	DropStrategy DropStrategy
+	QueueSize     int
+	DropStrategy  DropStrategy
+	BatchSize     int
+	FlushInterval time.Duration
 }
 
 type logRequest struct {
@@ -502,6 +504,12 @@ func (l *Logger) EnableAsync(opts AsyncOptions) {
 	if opts.DropStrategy != DropNew && opts.DropStrategy != DropOldest && opts.DropStrategy != BlockWhenFull {
 		opts.DropStrategy = DropNew
 	}
+	if opts.BatchSize <= 0 {
+		opts.BatchSize = 1
+	}
+	if opts.FlushInterval < 0 {
+		opts.FlushInterval = 0
+	}
 
 	l.asyncMu.Lock()
 	defer l.asyncMu.Unlock()
@@ -544,8 +552,93 @@ func (l *Logger) disableAsyncLocked() {
 
 func (l *Logger) asyncWorker(ch chan logRequest) {
 	defer l.asyncWG.Done()
-	for req := range ch {
-		l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args)
+
+	opts := l.asyncOpts
+	batchSize := opts.BatchSize
+	if batchSize <= 1 && opts.FlushInterval <= 0 {
+		for req := range ch {
+			l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args)
+		}
+		return
+	}
+
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+
+	flushInterval := opts.FlushInterval
+	batch := make([]logRequest, 0, batchSize)
+
+	var timer *time.Timer
+	startTimer := func() {
+		if flushInterval <= 0 {
+			return
+		}
+		if timer == nil {
+			timer = time.NewTimer(flushInterval)
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(flushInterval)
+	}
+
+	stopTimer := func() {
+		if timer == nil {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}
+
+	flush := func() {
+		for _, req := range batch {
+			l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args)
+		}
+		batch = batch[:0]
+		if flushInterval > 0 {
+			stopTimer()
+		}
+	}
+
+	for {
+		var timeout <-chan time.Time
+		if flushInterval > 0 && len(batch) > 0 && timer != nil {
+			timeout = timer.C
+		}
+
+		select {
+		case req, ok := <-ch:
+			if !ok {
+				if len(batch) > 0 {
+					flush()
+				}
+				if timer != nil {
+					stopTimer()
+				}
+				return
+			}
+			batch = append(batch, req)
+			if len(batch) >= batchSize {
+				flush()
+				continue
+			}
+			if flushInterval > 0 && len(batch) == 1 {
+				startTimer()
+			}
+		case <-timeout:
+			if len(batch) > 0 {
+				flush()
+			}
+		}
 	}
 }
 

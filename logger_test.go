@@ -9,9 +9,27 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	log "github.com/pod32g/simple-logger"
 )
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // TestNewLogger verifies that a new logger instance is created correctly with the default formatter
 func TestNewLogger(t *testing.T) {
@@ -373,6 +391,54 @@ func TestLogger_AsyncDrop(t *testing.T) {
 	if strings.Contains(output, "second") {
 		t.Fatalf("expected second message to be dropped, got %q", output)
 	}
+}
+
+func TestLogger_AsyncBatchingFlushesOnBatchSize(t *testing.T) {
+	var buf lockedBuffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger.EnableAsync(log.AsyncOptions{QueueSize: 8, BatchSize: 3})
+
+	logger.Info("batch-one")
+	logger.Info("batch-two")
+	logger.Info("batch-three")
+
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		out := buf.String()
+		if strings.Contains(out, "batch-one") && strings.Contains(out, "batch-two") && strings.Contains(out, "batch-three") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	logger.DisableAsync()
+	out := buf.String()
+	if !strings.Contains(out, "batch-one") || !strings.Contains(out, "batch-two") || !strings.Contains(out, "batch-three") {
+		t.Fatalf("expected batched messages to flush, got %q", out)
+	}
+}
+
+func TestLogger_AsyncFlushInterval(t *testing.T) {
+	var buf lockedBuffer
+	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger.EnableAsync(log.AsyncOptions{QueueSize: 4, BatchSize: 5, FlushInterval: 15 * time.Millisecond})
+
+	logger.Info("interval-message")
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), "interval-message") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if !strings.Contains(buf.String(), "interval-message") {
+		logger.DisableAsync()
+		t.Fatalf("expected message flushed by interval, got %q", buf.String())
+	}
+
+	logger.DisableAsync()
 }
 
 // TestLogger_SetFormatter verifies that changing the formatter changes output format

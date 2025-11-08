@@ -332,14 +332,22 @@ blocking when the queue is full.
 Move formatting/writes off the hot path by enabling the async worker:
 
 ```go
-logger.EnableAsync(log.AsyncOptions{QueueSize: 1024, DropStrategy: log.DropNew})
+logger.EnableAsync(log.AsyncOptions{
+    QueueSize:     1024,
+    DropStrategy:  log.DropNew,
+    BatchSize:     64,
+    FlushInterval: 10 * time.Millisecond,
+})
 
 // ... later
 logger.DisableAsync() // flushes and stops the worker
 ```
 
-The queue drops entries when full if `Drop` is true; otherwise log calls block
-until capacity becomes available.
+Choose a drop strategy when the queue is full: `DropNew`, `DropOldest`, or
+`BlockWhenFull`. Batching lets the worker drain entries in chunks, while
+`FlushInterval` guarantees partially filled batches still reach the sink. Query
+`logger.AsyncStats()` to watch queue length and drops, and adjust behaviour at
+runtime with `SetDropStrategy`.
 
 ### Bridging to slog
 

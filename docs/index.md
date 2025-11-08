@@ -22,7 +22,7 @@ Simple Logger is a lightweight logging library for Go that supports multiple log
 - **slog Bridge**: drop-in `slog.Handler` that forwards records to simple-logger.
 - **OTLP Hook**: ship entries to collectors by implementing the tiny exporter interface.
 - **Sampling Controls**: throttle noisy log paths with pluggable samplers.
-- **Async Mode**: move formatting off the hot path with buffered workers.
+- **Async Mode**: move formatting off the hot path with buffered workers, batching, and flush intervals.
 - **Rotation Support**: integrate with `lumberjack` for size/age based rotation.
 - **Hook filters and drop strategies**: limit observers to specific levels and monitor queue stats.
 
