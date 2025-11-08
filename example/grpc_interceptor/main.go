@@ -128,8 +128,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	conn, err := grpc.DialContext(
-		ctx,
+	conn, err := grpc.NewClient(
 		"localhost:50051",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(jsonCodec{})),
@@ -140,7 +139,7 @@ func main() {
 	defer conn.Close()
 
 	md := metadata.Pairs("x-request-id", "1234")
-	callCtx := metadata.NewOutgoingContext(context.Background(), md)
+	callCtx := metadata.NewOutgoingContext(ctx, md)
 
 	req := &HelloRequest{Name: "world"}
 	var reply HelloReply

@@ -27,6 +27,8 @@ Simple Logger is a lightweight logging library for Go that supports multiple log
 - **Hook filters and drop strategies**: limit observers to specific levels and monitor queue stats.
 - **Hot reload helpers**: watch config files or react to config pushes via channels.
 - **Expanded examples**: HTTP middleware, gRPC interceptors, and a CLI with live config updates.
+- **End-to-end tests**: `go test ./e2e` exercises config reload, async drops, hook filters, and bridge integrations against real outputs.
+- **Extra QA**: `go test -race ./...`, `staticcheck ./...`, and fuzz targets (e.g. `go test -fuzz=FuzzJSONFormatterFormat -run=^$`).
 
 ## Advantages
 

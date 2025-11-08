@@ -219,6 +219,13 @@ func ConfigureLogger(logger *Logger, config LoggerConfig) (*Logger, error) {
 		return nil, err
 	}
 
+	if df, ok := formatter.(*DefaultFormatter); ok {
+		df.TimeLayout = config.TimeFormat
+	}
+	if jf, ok := formatter.(*JSONFormatter); ok {
+		jf.TimeLayout = config.TimeFormat
+	}
+
 	if logger == nil {
 		logger = NewLogger(output, config.Level, formatter)
 	} else {
@@ -232,12 +239,6 @@ func ConfigureLogger(logger *Logger, config LoggerConfig) (*Logger, error) {
 	}
 	logger.SetSynchronized(config.SyncWrites)
 	logger.SetIncludeStacktrace(config.IncludeStacktrace)
-	if df, ok := formatter.(*DefaultFormatter); ok {
-		df.TimeLayout = config.TimeFormat
-	}
-	if jf, ok := formatter.(*JSONFormatter); ok {
-		jf.TimeLayout = config.TimeFormat
-	}
 	return logger, nil
 }
 
