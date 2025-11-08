@@ -2,10 +2,13 @@ package log_test
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	log "github.com/pod32g/simple-logger"
 )
@@ -35,11 +38,17 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	os.Setenv("LOG_FORMAT", "json")
 	os.Setenv("LOG_ENABLE_CALLER", "false")
 	os.Setenv("LOG_SYNC_WRITES", "false")
+	os.Setenv("LOG_COLORIZE", "true")
+	os.Setenv("LOG_TIME_FORMAT", time.RFC822)
+	os.Setenv("LOG_INCLUDE_STACKTRACE", "true")
 	defer os.Unsetenv("LOG_LEVEL")
 	defer os.Unsetenv("LOG_OUTPUT")
 	defer os.Unsetenv("LOG_FORMAT")
 	defer os.Unsetenv("LOG_ENABLE_CALLER")
 	defer os.Unsetenv("LOG_SYNC_WRITES")
+	defer os.Unsetenv("LOG_COLORIZE")
+	defer os.Unsetenv("LOG_TIME_FORMAT")
+	defer os.Unsetenv("LOG_INCLUDE_STACKTRACE")
 
 	cfg := log.LoadConfigFromEnv()
 	if cfg.Level != log.DEBUG {
@@ -56,6 +65,18 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	}
 	if cfg.SyncWrites {
 		t.Errorf("expected SyncWrites false")
+	}
+	if !cfg.Colorize {
+		t.Errorf("expected Colorize true")
+	}
+	if cfg.TimeFormat != time.RFC822 {
+		t.Errorf("expected TimeFormat %q, got %q", time.RFC822, cfg.TimeFormat)
+	}
+	if !cfg.IncludeStacktrace {
+		t.Errorf("expected IncludeStacktrace true")
+	}
+	if cfg.Rotation.Enable {
+		t.Errorf("expected rotation disabled by default when LOG_ROTATE not set")
 	}
 }
 
@@ -114,7 +135,7 @@ func TestApplyConfigJSON(t *testing.T) {
 	var buf bytes.Buffer
 	logger.SetOutput(&buf)
 	logger.Info("hello")
-	if !isValidJSON(buf.String()) {
+	if !isValidJSONConfig(buf.String()) {
 		t.Errorf("expected JSON output, got %s", buf.String())
 	}
 }
@@ -196,9 +217,117 @@ func TestLoadConfigFromEnvBoolVariants(t *testing.T) {
 		t.Errorf("expected EnableCaller true for LOG_ENABLE_CALLER=TRUE")
 	}
 
+	t.Setenv("LOG_COLORIZE", "1")
+	cfg = log.LoadConfigFromEnv()
+	if !cfg.Colorize {
+		t.Errorf("expected Colorize true for LOG_COLORIZE=1")
+	}
+
 	t.Setenv("LOG_ENABLE_CALLER", "0")
 	cfg = log.LoadConfigFromEnv()
 	if cfg.EnableCaller {
 		t.Errorf("expected EnableCaller false for LOG_ENABLE_CALLER=0")
 	}
+}
+
+func TestLoadConfigFromEnvRotation(t *testing.T) {
+	t.Setenv("LOG_ROTATE", "true")
+	t.Setenv("LOG_ROTATE_MAX_SIZE", "10")
+	t.Setenv("LOG_ROTATE_MAX_AGE", "5")
+	t.Setenv("LOG_ROTATE_MAX_BACKUPS", "3")
+	t.Setenv("LOG_ROTATE_COMPRESS", "false")
+
+	cfg := log.LoadConfigFromEnv()
+	if !cfg.Rotation.Enable {
+		t.Fatalf("expected rotation enabled")
+	}
+	if cfg.Rotation.MaxSize != 10 {
+		t.Fatalf("expected MaxSize 10, got %d", cfg.Rotation.MaxSize)
+	}
+	if cfg.Rotation.MaxAge != 5 {
+		t.Fatalf("expected MaxAge 5, got %d", cfg.Rotation.MaxAge)
+	}
+	if cfg.Rotation.MaxBackups != 3 {
+		t.Fatalf("expected MaxBackups 3, got %d", cfg.Rotation.MaxBackups)
+	}
+	if cfg.Rotation.Compress {
+		t.Fatalf("expected Compress false")
+	}
+}
+
+func TestConfigureLoggerColorize(t *testing.T) {
+	cfg := log.DefaultConfig()
+	cfg.Colorize = true
+	logger := log.ApplyConfig(cfg)
+	defer logger.Close()
+
+	var buf bytes.Buffer
+	logger.SetOutput(&buf)
+	logger.Info("colored")
+
+	if !strings.Contains(buf.String(), "\u001b[") {
+		t.Fatalf("expected ANSI color codes in output, got %q", buf.String())
+	}
+}
+
+func TestConfigureLoggerSwitchFormat(t *testing.T) {
+	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{})
+	defer logger.Close()
+
+	cfg := log.DefaultConfig()
+	cfg.Format = "json"
+	_, err := log.ConfigureLogger(logger, cfg)
+	if err != nil {
+		t.Fatalf("configure logger: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger.SetOutput(&buf)
+	logger.Info("json message")
+	if !isValidJSONConfig(buf.String()) {
+		t.Fatalf("expected JSON output, got %q", buf.String())
+	}
+}
+
+func TestConfigureLoggerTimeFormatAndStacktrace(t *testing.T) {
+	cfg := log.DefaultConfig()
+	cfg.TimeFormat = "2006-01-02"
+	cfg.IncludeStacktrace = true
+	logger := log.ApplyConfig(cfg)
+	defer logger.Close()
+
+	var buf bytes.Buffer
+	logger.SetOutput(&buf)
+	expected := time.Now().Format(cfg.TimeFormat)
+	logger.Error("with stack")
+
+	output := buf.String()
+	if !strings.Contains(output, "with stack") {
+		t.Fatalf("expected message, got %q", output)
+	}
+	if !strings.Contains(output, "stacktrace") {
+		t.Fatalf("expected stacktrace field, got %q", output)
+	}
+	if !strings.Contains(output, expected) {
+		t.Fatalf("expected custom time layout %q, got %q", expected, output)
+	}
+}
+
+func TestConfigureLoggerRotation(t *testing.T) {
+	cfg := log.DefaultConfig()
+	cfg.Output = filepath.Join(t.TempDir(), "rotating.log")
+	cfg.Rotation = log.RotationConfig{Enable: true, MaxSize: 1}
+
+	logger, err := log.ConfigureLogger(nil, cfg)
+	if err != nil {
+		t.Fatalf("configure logger: %v", err)
+	}
+	defer logger.Close()
+
+	logger.Info("rotation test")
+}
+
+func isValidJSONConfig(s string) bool {
+	var js map[string]interface{}
+	return json.Unmarshal([]byte(s), &js) == nil
 }
