@@ -26,6 +26,7 @@ Simple Logger is a lightweight logging library for Go that supports multiple log
 - **Rotation Support**: integrate with `lumberjack` for size/age based rotation.
 - **Hook filters and drop strategies**: limit observers to specific levels and monitor queue stats.
 - **Hot reload helpers**: watch config files or react to config pushes via channels.
+- **Expanded examples**: HTTP middleware, gRPC interceptors, and a CLI with live config updates.
 
 ## Advantages
 
