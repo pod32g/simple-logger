@@ -16,6 +16,10 @@
 - Supports plain text, JSON, and custom log formats.
 - Simple API for setting log levels, outputs, and formats.
 - Dynamic configuration updates at runtime.
+- Thread-safe logging: concurrent log calls are serialized to keep entries intact, with an opt-out switch when you control the writer.
+- Optional caller information, disabled by default to minimize overhead.
+- Secure file output: logs written via `ApplyConfig` use `0600` permissions.
+- Hot-path helpers (`InfoString`, `Info1`, etc.) to skip variadic allocations when you already have formatted values.
 
 ## Installation
 
@@ -42,6 +46,7 @@ import (
 func main() {
 	// Create a new logger instance with the default formatter
 	logger := log.NewLogger(os.Stdout, log.INFO, &log.DefaultFormatter{})
+	defer logger.Close()
 
 	// Log messages at different levels
 	logger.Debug("This is a debug message")
@@ -69,9 +74,11 @@ func main() {
         Output:       "stdout",
         Format:       "json",
         EnableCaller: true,
+        SyncWrites:   true, // disable when you control the writer and need maximum throughput
     }
 
     logger := log.ApplyConfig(config)
+    defer logger.Close()
 
     logger.Debug("This is a debug message with caller info.")
     logger.Info("This is an info message in JSON format.")
@@ -96,6 +103,7 @@ import (
 
 func main() {
     logger := log.NewLogger(os.Stdout, log.INFO, &log.DefaultFormatter{})
+    defer logger.Close()
 
     logger.Info("Initial log level is Info.")
 
@@ -122,9 +130,11 @@ func main() {
         Output:       "app.log",  // Specify the filename here
         Format:       "text",
         EnableCaller: false,
+        SyncWrites:   true,
     }
 
     logger := log.ApplyConfig(config)
+    defer logger.Close()
 
     logger.Info("This message will be logged to a file.")
 }
@@ -142,14 +152,15 @@ import (
 
 func main() {
 	// Open a file for logging
-	file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		logger.Fatal("Failed to open log file")
+		log.Fatal("Failed to open log file")
 	}
 	defer file.Close()
 
 	// Create a new logger instance that writes to the file with the default formatter
 	logger := log.NewLogger(file, log.INFO, &log.DefaultFormatter{})
+	defer logger.Close()
 
 	logger.Info("Logging to a file now!")
 }
@@ -173,6 +184,7 @@ func main() {
 	config.Custom = &MyCustomFormatter{} // Provide your custom formatter
 
 	logger := log.ApplyConfig(config)
+	defer logger.Close()
 
 	logger.Info("This is an info message with a custom format.")
 	logger.Debug("This is a debug message with a custom format.")
@@ -203,23 +215,98 @@ func logLevelToString(level log.LogLevel) string {
 }
 ```
 
-## Benchmarks
+## Managing Logger Lifecycle
 
-The following simple benchmark compares the logger performance with `fmt.Sprintf`.
-Two configurations are shown: the default logger which includes caller
-information, and a faster variant that disables caller lookup.
+Loggers may own resources such as open files. When you create a logger via `ApplyConfig`—or use `SetOutputWithCloser`—always close it when you are finished:
 
-```bash
-$ go test -bench .
-BenchmarkLoggerDefault-5          682068        1730 ns/op
-BenchmarkLoggerNoCaller-5        2763504         396.3 ns/op
-BenchmarkFmtSprintf-5            8777575         138.9 ns/op
+```go
+logger := log.ApplyConfig(log.DefaultConfig())
+defer logger.Close()
 ```
 
+To hand the logger a resource to manage explicitly, supply a closer:
+
+```go
+file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+if err != nil {
+	log.Fatal(err)
+}
+logger.SetOutputWithCloser(file, file)
+```
+
+`SetOutput` remains available for writers that do not require cleanup.
+
+## Tuning Synchronization
+
+By default, `Logger` serializes writes to guarantee line integrity even when the underlying writer is not concurrency-safe. When you control the destination and know it can handle concurrent access (for example, a sharded writer or a buffered channel), you can disable synchronization to squeeze out a bit more throughput:
+
+```go
+logger.SetSynchronized(false)
+```
+
+The same setting is exposed in `LoggerConfig` as `SyncWrites` and via the environment variable `LOG_SYNC_WRITES`. Remember that disabling synchronization shifts the responsibility for atomic writes to your writer implementation.
+
+### Allocation-Free Helpers
+
+If you already have preformatted strings or a single additional value, use the `*String`/`*1` helpers to avoid the slice allocation that variadic calls introduce:
+
+```go
+logger.InfoString("application started")
+logger.Info1("user-count", userCount)
+```
+
+The classic variadic methods still work for convenience; mix and match based on your hot paths.
+
+## Comparison
+
+| Library          | Caller Info (default) | Write Sync (default) | JSON Support | Notable Focus               |
+|------------------|------------------------|----------------------|--------------|-----------------------------|
+| simple-logger    | off                    | on                   | built-in     | Lightweight, speed-first    |
+| uber-go/zap      | off                    | on                   | built-in     | High-performance structure  |
+| sirupsen/logrus  | on                     | on                   | via hook     | Feature-rich, pluggable     |
+| rs/zerolog       | off                    | off                  | native       | Zero-allocation structured  |
+| go.uber.org/zap* | off                    | on                   | built-in     | Structured logging (sugared)|
+
+`simple-logger` aims to bridge the gap between extremely fast structured loggers like `zerolog` and drop-in libraries such as `logrus`, keeping a minimal API while offering caller info and write serialization that can be toggled off when absolute throughput matters.
+
+## Benchmarks
+
+All numbers below were gathered with `go test -bench Benchmark -benchmem` on
+macOS (Apple M4 Pro, ARM64) using Go 1.22.3. The benchmark suite lives in
+`benchmark_compare_test.go` so you can reproduce locally.
+
+```bash
+$ go test -bench Benchmark -benchmem
+BenchmarkSimpleLogger-14           8764585       120.9 ns/op     200 B/op       5 allocs/op
+BenchmarkSimpleLoggerNoSync-14     9946131       120.9 ns/op     200 B/op       5 allocs/op
+BenchmarkZapSugar-14               6779299       177.5 ns/op      32 B/op       2 allocs/op
+BenchmarkLogrus-14                 1963604       608.5 ns/op     488 B/op      16 allocs/op
+BenchmarkZerolog-14               25052126        47.0 ns/op       0 B/op       0 allocs/op
+BenchmarkLoggerDefault-14           968043      1247 ns/op     535 B/op       7 allocs/op
+BenchmarkLoggerNoCaller-14         9881538       122.6 ns/op     200 B/op       5 allocs/op
+BenchmarkFmtSprintf-14            26704794        45.9 ns/op      39 B/op       2 allocs/op
+```
+
+### Takeaways
+
+- With caller lookup disabled (the default) `simple-logger` now beats the sugared
+  `zap` logger on this workload while keeping a simpler API.
+- Disabling `SyncWrites` still has little effect when writing to `io.Discard`; the
+  critical section is short. The toggle is useful only when the destination writer
+  itself is the bottleneck.
+- `zerolog` remains the zero-allocation champion for structured logging; use it
+  when absolute minimum overhead matters and you are comfortable with its API.
+- `logrus` trades speed for flexibility. Compared to it, `simple-logger` offers
+  a 4–5× throughput advantage while preserving a familiar API.
+- Keeping caller lookup enabled (`LoggerDefault`) multiplies the cost by roughly
+  10× due to stack inspection. Only enable it when you really need file/line
+  metadata.
+
 Even without caller information, the logger performs more work than
-`fmt.Sprintf` because it writes to an `io.Writer` and formats timestamps.
-Disabling caller lookup (`EnableCaller: false`) helps reduce overhead when
-performance is critical.
+`fmt.Sprintf` because it writes to an `io.Writer` and formats timestamps. For
+absolute maximum throughput, make sure `EnableCaller` remains `false` and only
+set `SyncWrites` to `false` when the underlying writer safely handles concurrent
+access.
 
 ## License
 
@@ -236,3 +323,9 @@ For any questions or issues, please reach out via GitHub.
 ---
 
 Happy logging!
+
+## Known Limitations
+
+- **Resource management:** `Logger.ApplyConfig` and `SetOutputWithCloser` can own file handles; remember to call `logger.Close()` when you are done to release resources promptly.
+- **Caller information overhead:** Enabling caller reporting requires walking the call stack, which adds latency to every log call. The default configuration leaves caller reporting disabled to avoid this cost.
+- **JSON caller resolution:** `JSONFormatter` now looks up caller information in line with the text formatter, but costs remain higher when caller tracking is enabled.

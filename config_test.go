@@ -21,8 +21,11 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Format != "text" {
 		t.Errorf("expected format text, got %s", cfg.Format)
 	}
-	if !cfg.EnableCaller {
-		t.Errorf("expected EnableCaller true")
+	if cfg.EnableCaller {
+		t.Errorf("expected EnableCaller false")
+	}
+	if !cfg.SyncWrites {
+		t.Errorf("expected SyncWrites true")
 	}
 }
 
@@ -31,10 +34,12 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	os.Setenv("LOG_OUTPUT", "stderr")
 	os.Setenv("LOG_FORMAT", "json")
 	os.Setenv("LOG_ENABLE_CALLER", "false")
+	os.Setenv("LOG_SYNC_WRITES", "false")
 	defer os.Unsetenv("LOG_LEVEL")
 	defer os.Unsetenv("LOG_OUTPUT")
 	defer os.Unsetenv("LOG_FORMAT")
 	defer os.Unsetenv("LOG_ENABLE_CALLER")
+	defer os.Unsetenv("LOG_SYNC_WRITES")
 
 	cfg := log.LoadConfigFromEnv()
 	if cfg.Level != log.DEBUG {
@@ -48,6 +53,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	}
 	if cfg.EnableCaller {
 		t.Errorf("expected EnableCaller false")
+	}
+	if cfg.SyncWrites {
+		t.Errorf("expected SyncWrites false")
 	}
 }
 
@@ -124,6 +132,19 @@ func TestApplyConfigCustomFormatter(t *testing.T) {
 	}
 }
 
+func TestApplyConfigSyncWrites(t *testing.T) {
+	cfg := log.DefaultConfig()
+	cfg.SyncWrites = false
+	logger := log.ApplyConfig(cfg)
+	if logger.Synchronized() {
+		t.Fatalf("expected logger to disable synchronized writes")
+	}
+	logger.SetSynchronized(true)
+	if !logger.Synchronized() {
+		t.Fatalf("expected to re-enable synchronized writes")
+	}
+}
+
 type testFormatter struct{}
 
 func (testFormatter) Format(level log.LogLevel, message string) string {
@@ -137,12 +158,22 @@ func TestApplyConfigFileOutput(t *testing.T) {
 	cfg.Output = file
 	logger := log.ApplyConfig(cfg)
 	logger.Info("file message")
+	if err := logger.Close(); err != nil {
+		t.Fatalf("failed to close logger: %v", err)
+	}
 	data, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatalf("unable to read file: %v", err)
 	}
 	if !bytes.Contains(data, []byte("file message")) {
 		t.Errorf("expected message in file, got %s", string(data))
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("expected file permissions 0600, got %o", info.Mode().Perm())
 	}
 }
 
@@ -155,5 +186,19 @@ func TestApplyConfigDisableCaller(t *testing.T) {
 	logger.Info("msg")
 	if strings.Contains(buf.String(), ".go:") {
 		t.Errorf("expected no caller info, got %s", buf.String())
+	}
+}
+
+func TestLoadConfigFromEnvBoolVariants(t *testing.T) {
+	t.Setenv("LOG_ENABLE_CALLER", "TRUE")
+	cfg := log.LoadConfigFromEnv()
+	if !cfg.EnableCaller {
+		t.Errorf("expected EnableCaller true for LOG_ENABLE_CALLER=TRUE")
+	}
+
+	t.Setenv("LOG_ENABLE_CALLER", "0")
+	cfg = log.LoadConfigFromEnv()
+	if cfg.EnableCaller {
+		t.Errorf("expected EnableCaller false for LOG_ENABLE_CALLER=0")
 	}
 }
