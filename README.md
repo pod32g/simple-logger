@@ -25,6 +25,7 @@
 - Hooks and multi-sink outputs for forwarding logs to additional destinations.
 - Optional asynchronous mode with configurable buffers and drop policies.
 - Hook filters and async stats so you can limit callbacks and monitor queue health.
+- Hot reload helpers for watching config files or reacting to config pushes.
 
 ## Installation
 
@@ -326,6 +327,36 @@ fmt.Printf("length=%d dropped=%d\n", stats.QueueLength, stats.Dropped)
 
 Use `SetDropStrategy` to switch between dropping new entries, dropping oldest, or
 blocking when the queue is full.
+
+### Hot Reload Helpers
+
+Reload configuration from a JSON file or your own control plane without wiring
+up boilerplate:
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+if err := log.WatchConfigFileForLogger(ctx, logger, "./logger.json", 2*time.Second, func(err error) {
+    logger.Error("config reload failed", log.Error("error", err))
+}); err != nil {
+    panic(err)
+}
+```
+
+You can also push configs through a channel:
+
+```go
+configs := make(chan log.LoggerConfig, 1)
+go log.ReloadLoggerFromChannel(ctx, logger, configs, func(err error) {
+    logger.Warn("config update rejected", log.Error("error", err))
+})
+
+configs <- log.LoggerConfig{Level: log.DEBUG, Output: "stdout", Format: "json"}
+```
+
+Both helpers reuse `ConfigureLogger` under the hood, so they understand rotation,
+formatters, and other options.
 
 ### Asynchronous Logging
 
