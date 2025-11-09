@@ -19,10 +19,9 @@ type Exporter interface {
 
 // Hook exports log entries to an OTLP exporter.
 type Hook struct {
-	exporter   Exporter
-	resource   *resourcepb.Resource
-	scope      *commonpb.InstrumentationScope
-	attributes []*commonpb.KeyValue
+	exporter Exporter
+	resource *resourcepb.Resource
+	scope    *commonpb.InstrumentationScope
 }
 
 // Option configures the OTLP hook.

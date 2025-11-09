@@ -366,6 +366,23 @@ Several runnable examples demonstrate integrations beyond the basics:
 - `example/grpc_interceptor`: Attach a unary interceptor that records request IDs, latency, and errors.
 - `example/cli_dynamic`: Small CLI that watches config files and accepts live tweaks from STDIN.
 
+### End-to-End Tests
+
+Integration tests under `e2e/` exercise configuration reload paths, async drop
+metrics, hook filters, and bridge integrations end-to-end. Run
+
+```bash
+go test ./e2e
+```
+
+or `go test ./...` to include them in the full suite.
+
+### Additional QA Checks
+
+- Concurrency safety: `go test -race ./...`
+- Static analysis: `staticcheck ./...` (install via `go install honnef.co/go/tools/cmd/staticcheck@latest`)
+- Fuzzing JSON formatter stability: `go test -fuzz=FuzzJSONFormatterFormat -run=^$`
+
 ### Asynchronous Logging
 
 Move formatting/writes off the hot path by enabling the async worker:
