@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      go-modules:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    # golangci-lint-action v7+ requires golangci-lint v2 and a v2 .golangci.yml.
+    # Ignore its major bumps so a grouped update cannot silently break the lint
+    # job; the migration to v2 should be done deliberately.
+    ignore:
+      - dependency-name: "golangci/golangci-lint-action"
+        update-types: ["version-update:semver-major"]
+    labels:
+      - dependencies
+      - github-actions

@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test (race)
+        run: go test -race ./...
+
+  release:
+    name: Publish GitHub release
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes_file=$(mktemp)
+          # Extract the matching section from CHANGELOG.md if present; otherwise
+          # fall back to GitHub's auto-generated notes.
+          version="${TAG#v}"
+          if awk -v ver="$version" '
+              $0 ~ "^## \\[" ver "\\]" {capture=1; next}
+              capture && /^## \[/ {exit}
+              capture {print}
+            ' CHANGELOG.md > "$notes_file" && [ -s "$notes_file" ]; then
+            gh release create "$TAG" --title "$TAG" --notes-file "$notes_file"
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+
+  proxy:
+    name: Warm pkg.go.dev
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request module on the Go proxy
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          module="github.com/pod32g/simple-logger"
+          # Asking the proxy for the new version makes it visible on pkg.go.dev.
+          curl -fsSL "https://proxy.golang.org/${module}/@v/${TAG}.info" || true
