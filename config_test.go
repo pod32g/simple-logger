@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -193,7 +194,9 @@ func TestApplyConfigFileOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat failed: %v", err)
 	}
-	if info.Mode().Perm() != 0600 {
+	// Unix file-permission bits are not meaningful on Windows, where os.Chmod
+	// only toggles the read-only attribute, so skip the assertion there.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Errorf("expected file permissions 0600, got %o", info.Mode().Perm())
 	}
 }

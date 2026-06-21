@@ -1,6 +1,7 @@
 
 # Simple Logger
 
+[![CI](https://github.com/pod32g/simple-logger/actions/workflows/ci.yml/badge.svg)](https://github.com/pod32g/simple-logger/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Reference](https://pkg.go.dev/badge/github.com/pod32g/simple-logger.svg)](https://pkg.go.dev/github.com/pod32g/simple-logger)
 [![Go Report Card](https://goreportcard.com/badge/github.com/pod32g/simple-logger)](https://goreportcard.com/report/github.com/pod32g/simple-logger)
@@ -26,6 +27,11 @@
 - Optional asynchronous mode with configurable buffers and drop policies.
 - Hook filters and async stats so you can limit callbacks and monitor queue health.
 - Hot reload helpers for watching config files or reacting to config pushes.
+- Derived loggers with bound fields (`With`), component naming (`Named`), and a process-wide `Default` logger.
+- Sensitive-data redaction (key-based and regex), field de-duplication, and size limits.
+- Trace correlation via an OpenTelemetry context extractor and OTLP `trace_id`/`span_id` promotion.
+- Operational helpers: `Flush`/`Sync`, sink write-error callbacks, per-level output mirroring, and a panic-capturing `Recover`.
+- A human-friendly `ConsoleFormatter` and an `httplog` subpackage for runtime level control and request-ID propagation.
 
 ## Installation
 
@@ -160,7 +166,7 @@ func main() {
 	// Open a file for logging
 	file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		log.Fatal("Failed to open log file")
+		panic("Failed to open log file: " + err.Error())
 	}
 	defer file.Close()
 
@@ -242,6 +248,111 @@ logger.InfoFields(
 Field helpers include `String`, `Int`, `Int64`, `Uint`, `Float64`, `Bool`,
 `Error`, and `Any` for arbitrary values. You can mix traditional variadic calls
 with structured logging as needed.
+
+### Derived Loggers with Bound Fields
+
+Use `With` to derive a logger that carries persistent fields on every entry —
+ideal for per-request or per-component loggers (`request_id`, `user`,
+`component`, ...). The derived logger is a `*Logger`, so it drops straight into
+any API that expects one (HTTP middleware, gRPC interceptors, the `slog` bridge).
+
+```go
+reqLogger := logger.With(
+    log.String("request_id", rid),
+    log.String("user", userID),
+)
+
+reqLogger.Info("processing payment")          // includes request_id and user
+reqLogger.Error("charge failed", log.Error("error", err))
+```
+
+Bound fields appear ahead of per-call and context-extracted fields. Derived
+loggers **share** the parent's output, level, hooks, and async state, so runtime
+changes (`SetLevel`, `SetOutput`, `AddHook`, `EnableAsync`, ...) made through any
+logger in the family are observed by all of them.
+
+### Gating Expensive Logs
+
+`Level()` returns the current level and `Enabled(level)` reports whether an entry
+would be emitted, so you can skip building costly fields on hot paths:
+
+```go
+if logger.Enabled(log.DEBUG) {
+    logger.DebugFields("state", expensiveSnapshot()...)
+}
+```
+
+### Redaction & Sensitive Data
+
+Mask credentials and PII before they reach any formatter or sink (including the
+OTLP exporter):
+
+```go
+// Key-based: redact fields named password/token/authorization (case-insensitive).
+logger.SetRedactor(log.NewKeyRedactor("password", "token", "authorization"))
+
+// Pattern-based: scrub secret shapes from field values and messages.
+logger.SetRedactor(log.NewPatternScrubber(
+    regexp.MustCompile(`Bearer [A-Za-z0-9._-]+`),
+))
+```
+
+You can also cap log size with `SetMaxFieldBytes`/`SetMaxMessageBytes` and collapse
+duplicate keys (last-wins) with `SetDeduplicateFields(true)`.
+
+### Default Logger
+
+For zero-config logging, use the process-wide default (swap it once at startup):
+
+```go
+log.SetDefault(log.ApplyConfig(log.DefaultConfig()))
+log.Default().Info("service started")
+```
+
+### Flushing & Durability
+
+In async mode, drain the queue at well-defined points without tearing down the
+worker, and fsync the file sink:
+
+```go
+logger.Flush()        // block until queued entries are written
+if err := logger.Sync(); err != nil { /* flush + fsync the file */ }
+```
+
+### Robustness Helpers
+
+```go
+logger.SetErrorHandler(func(err error) { /* sink write failed */ })
+
+go func() {
+    defer logger.Recover() // log a panic (with stack) and re-panic
+    // ...
+}()
+```
+
+### Trace Correlation (OpenTelemetry)
+
+Automatically attach `trace_id`/`span_id` to every context-aware log, and have the
+OTLP bridge promote them to first-class record fields:
+
+```go
+import "github.com/pod32g/simple-logger/bridge/oteltrace"
+
+logger.SetContextExtractor(oteltrace.Chain) // trace IDs + log.WithFields data
+logger.InfoContext(ctx, "handling request")  // emits trace_id, span_id
+```
+
+### HTTP Helpers
+
+The `bridge/httplog` subpackage offers runtime level control and request-ID
+propagation:
+
+```go
+import "github.com/pod32g/simple-logger/bridge/httplog"
+
+mux.Handle("/admin/loglevel", httplog.LevelHandler(logger)) // GET/PUT the level
+handler = httplog.RequestIDMiddleware("")(handler)          // request_id per request
+```
 
 #### Custom Field Encoders
 
@@ -422,13 +533,21 @@ Structured attributes, groups, and context metadata are preserved.
 Forward log entries to an OTLP collector by attaching the `otlp` hook:
 
 ```go
-exp := otlpexporter.New(...)
-hook := otlp.NewHook(exp, otlp.WithServiceName("checkout"))
+// exp is any value implementing the otlp.Exporter interface
+// (Export + Shutdown); see bridge/otlp/hook_test.go for a minimal example.
+hook := otlp.NewHook(exp,
+    otlp.WithServiceName("checkout"),
+    otlp.WithErrorHandler(func(err error) {
+        logger.Error("otlp export failed", log.Error("error", err))
+    }),
+)
 logger.AddHook(hook)
 ```
 
 The hook converts log entries into OTLP `ResourceLogs`; you can adapt any exporter
-implementing the simple `otlp.Exporter` interface.
+implementing the simple `otlp.Exporter` interface. Export failures are counted
+(`hook.Stats().Failed`) and, when `WithErrorHandler` is supplied, reported to your
+callback instead of being silently dropped.
 
 ### File Rotation
 
@@ -463,7 +582,7 @@ To hand the logger a resource to manage explicitly, supply a closer:
 ```go
 file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 if err != nil {
-	log.Fatal(err)
+	logger.Fatal(err)
 }
 logger.SetOutputWithCloser(file, file)
 ```
@@ -479,6 +598,8 @@ logger.SetSynchronized(false)
 ```
 
 The same setting is exposed in `LoggerConfig` as `SyncWrites` and via the environment variable `LOG_SYNC_WRITES`. Remember that disabling synchronization shifts the responsibility for atomic writes to your writer implementation.
+
+> **Note:** When synchronization is disabled, writers replaced via `SetOutputWithCloser` (including live config reloads) are not closed immediately, because another goroutine may still hold the previous writer. They are closed when you call `logger.Close()`. Keep `SyncWrites` enabled (the default) if you swap outputs frequently while logging and want each replaced writer closed eagerly.
 
 ### Allocation-Free Helpers
 
@@ -506,7 +627,7 @@ The classic variadic methods still work for convenience; mix and match based on 
 ## Benchmarks
 
 All numbers below were gathered with `go test -bench Benchmark -benchmem` on
-macOS (Apple M4 Pro, ARM64) using Go 1.22.3. The benchmark suite lives in
+macOS (Apple M4 Pro, ARM64) using Go 1.24. The benchmark suite lives in
 `benchmark_compare_test.go` so you can reproduce locally.
 
 ```bash
@@ -559,7 +680,7 @@ Happy logging!
 
 ## Known Limitations
 
-- **Resource management:** `Logger.ApplyConfig` and `SetOutputWithCloser` can own file handles; remember to call `logger.Close()` when you are done to release resources promptly.
+- **Resource management:** `ApplyConfig` and `SetOutputWithCloser` can own file handles; remember to call `logger.Close()` when you are done to release resources promptly.
 - **Caller information overhead:** Enabling caller reporting requires walking the call stack, which adds latency to every log call. The default configuration leaves caller reporting disabled to avoid this cost.
 - **JSON caller resolution:** `JSONFormatter` now looks up caller information in line with the text formatter, but costs remain higher when caller tracking is enabled.
 
@@ -569,7 +690,7 @@ Happy logging!
 |---------------------|-----------------------------------------------------|
 | `LOG_LEVEL`         | Overrides the log level (`DEBUG`..`FATAL`).         |
 | `LOG_OUTPUT`        | `stdout`, `stderr`, or a file path.                 |
-| `LOG_FORMAT`        | `text`, `json`, or `custom`.                        |
+| `LOG_FORMAT`        | `text`, `json`, `console`, or `custom`.             |
 | `LOG_ENABLE_CALLER` | `true`/`false` to include caller information.       |
 | `LOG_SYNC_WRITES`   | `true`/`false` to control write serialization.      |
 | `LOG_COLORIZE`      | `true`/`false` to colorize text formatter output.   |

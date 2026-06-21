@@ -2,7 +2,9 @@ package otlp
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	log "github.com/pod32g/simple-logger"
@@ -22,10 +24,28 @@ type Hook struct {
 	exporter Exporter
 	resource *resourcepb.Resource
 	scope    *commonpb.InstrumentationScope
+	onError  func(error)
+	failed   atomic.Int64
+}
+
+// HookStats reports health counters for the OTLP hook.
+type HookStats struct {
+	// Failed is the number of exports that returned an error.
+	Failed int64
 }
 
 // Option configures the OTLP hook.
 type Option func(*Hook)
+
+// WithErrorHandler registers a callback invoked whenever an export fails.
+// Without one, export failures are still counted (see Stats) but are otherwise
+// silent — telemetry delivery to a remote backend can fail, so callers wiring
+// this into production should observe it.
+func WithErrorHandler(fn func(error)) Option {
+	return func(h *Hook) {
+		h.onError = fn
+	}
+}
 
 // WithServiceName sets the service.name resource attribute.
 func WithServiceName(name string) Option {
@@ -62,6 +82,9 @@ func NewHook(exporter Exporter, opts ...Option) *Hook {
 
 // Fire satisfies the Hook interface for simple-logger.
 func (h *Hook) Fire(level log.LogLevel, message string, fields []log.Field) {
+	if h.exporter == nil {
+		return
+	}
 	record := &logspb.LogRecord{
 		TimeUnixNano:         uint64(time.Now().UnixNano()),
 		ObservedTimeUnixNano: uint64(time.Now().UnixNano()),
@@ -71,6 +94,21 @@ func (h *Hook) Fire(level log.LogLevel, message string, fields []log.Field) {
 	}
 
 	for _, field := range fields {
+		// Promote well-known trace-correlation keys to the first-class OTLP
+		// LogRecord fields so backends can join logs to traces at the protocol
+		// level, in addition to keeping them as attributes.
+		if s, ok := field.Value.(string); ok {
+			switch field.Key {
+			case "trace_id":
+				if b, err := hex.DecodeString(s); err == nil && len(b) == 16 {
+					record.TraceId = b
+				}
+			case "span_id":
+				if b, err := hex.DecodeString(s); err == nil && len(b) == 8 {
+					record.SpanId = b
+				}
+			}
+		}
 		record.Attributes = append(record.Attributes, &commonpb.KeyValue{
 			Key:   field.Key,
 			Value: anyValue(field.Value),
@@ -85,11 +123,24 @@ func (h *Hook) Fire(level log.LogLevel, message string, fields []log.Field) {
 		}},
 	}
 
-	_ = h.exporter.Export(context.Background(), resourceLogs)
+	if err := h.exporter.Export(context.Background(), resourceLogs); err != nil {
+		h.failed.Add(1)
+		if h.onError != nil {
+			h.onError(err)
+		}
+	}
+}
+
+// Stats returns the hook's export counters.
+func (h *Hook) Stats() HookStats {
+	return HookStats{Failed: h.failed.Load()}
 }
 
 // Close shuts down the exporter.
 func (h *Hook) Close(ctx context.Context) error {
+	if h.exporter == nil {
+		return nil
+	}
 	return h.exporter.Shutdown(ctx)
 }
 

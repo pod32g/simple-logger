@@ -376,20 +376,31 @@ func TestLogger_AsyncLogging(t *testing.T) {
 }
 
 func TestLogger_AsyncDrop(t *testing.T) {
-	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	// Gate the worker on its first write so the queue state is deterministic
+	// rather than racing the worker (which made this test flaky).
+	g := newGatedWriter()
+	logger := log.NewLogger(g, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
 	logger.EnableAsync(log.AsyncOptions{QueueSize: 1, DropStrategy: log.DropNew})
 
-	logger.Info("first")
-	logger.Info("second")
+	logger.Info("first") // worker pulls this and parks inside Write
+	<-g.started          // queue is now empty, worker parked
+
+	logger.Info("second") // sits in the queue
+	logger.Info("third")  // queue full -> DropNew drops the newest
+
+	if dropped := logger.AsyncStats().Dropped; dropped != 1 {
+		t.Fatalf("expected exactly 1 drop, got %d", dropped)
+	}
+
+	close(g.release)
 	logger.DisableAsync()
 
-	output := buf.String()
-	if !strings.Contains(output, "first") {
-		t.Fatalf("expected first message to be logged, got %q", output)
+	output := g.String()
+	if !strings.Contains(output, "first") || !strings.Contains(output, "second") {
+		t.Fatalf("expected first and second messages logged, got %q", output)
 	}
-	if strings.Contains(output, "second") {
-		t.Fatalf("expected second message to be dropped, got %q", output)
+	if strings.Contains(output, "third") {
+		t.Fatalf("expected third message to be dropped (DropNew), got %q", output)
 	}
 }
 

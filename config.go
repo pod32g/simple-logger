@@ -18,9 +18,12 @@ type CustomFormatter interface {
 
 // LoggerConfig holds all configurable settings for the logger
 type LoggerConfig struct {
-	Level             LogLevel        `json:"level"`
-	Output            string          `json:"output"` // Can be "stdout", "stderr", or a filepath
-	Format            string          `json:"format"` // Can be "text", "json", or "custom"
+	Level  LogLevel `json:"level"`
+	Output string   `json:"output"` // Can be "stdout", "stderr", or a filepath
+	Format string   `json:"format"` // Can be "text", "json", or "custom"
+	// Filepath, when non-empty, designates a log file destination and takes
+	// precedence over Output. Prefer Output for new configurations; Filepath is
+	// retained for backward compatibility.
 	Filepath          string          `json:"filepath"`
 	EnableCaller      bool            `json:"enable_caller"`
 	SyncWrites        bool            `json:"sync_writes"`
@@ -149,7 +152,8 @@ func LoadConfigFromFile(filePath string) (LoggerConfig, error) {
 	if err != nil {
 		return config, err
 	}
-	defer file.Close()
+	// Close error on a read-only file is not actionable.
+	defer func() { _ = file.Close() }()
 
 	decoder := json.NewDecoder(file)
 	err = decoder.Decode(&config)
@@ -191,12 +195,17 @@ func ApplyConfig(config LoggerConfig) *Logger {
 func ConfigureLogger(logger *Logger, config LoggerConfig) (*Logger, error) {
 	var output io.Writer = os.Stdout
 	var closer io.Closer
-	if config.Output == "stderr" {
+	// Filepath, when set, takes precedence over Output as a file destination.
+	target := config.Output
+	if config.Filepath != "" {
+		target = config.Filepath
+	}
+	if target == "stderr" {
 		output = os.Stderr
-	} else if config.Output != "stdout" {
+	} else if target != "stdout" {
 		if config.Rotation.Enable {
 			lj := &lumberjack.Logger{
-				Filename:   config.Output,
+				Filename:   target,
 				MaxSize:    config.Rotation.MaxSize,
 				MaxAge:     config.Rotation.MaxAge,
 				MaxBackups: config.Rotation.MaxBackups,
@@ -205,7 +214,7 @@ func ConfigureLogger(logger *Logger, config LoggerConfig) (*Logger, error) {
 			output = lj
 			closer = lj
 		} else {
-			file, err := os.OpenFile(config.Output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			file, err := os.OpenFile(target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 			if err != nil {
 				return nil, fmt.Errorf("open log file: %w", err)
 			}
@@ -246,6 +255,8 @@ func formatterForConfig(config LoggerConfig) (Formatter, error) {
 	switch strings.ToLower(config.Format) {
 	case "json":
 		return &JSONFormatter{IncludeCaller: config.EnableCaller, TimeLayout: config.TimeFormat}, nil
+	case "console":
+		return &ConsoleFormatter{TimeLayout: config.TimeFormat, NoColor: !config.Colorize}, nil
 	case "custom":
 		if config.Custom == nil {
 			return nil, fmt.Errorf("custom formatter requested but Custom field is nil")
@@ -258,18 +269,7 @@ func formatterForConfig(config LoggerConfig) (Formatter, error) {
 
 // parseLogLevel converts a string representation of a log level to the corresponding LogLevel
 func parseLogLevel(level string) LogLevel {
-	switch strings.ToUpper(level) {
-	case "DEBUG":
-		return DEBUG
-	case "INFO":
-		return INFO
-	case "WARN":
-		return WARN
-	case "ERROR":
-		return ERROR
-	case "FATAL":
-		return FATAL
-	default:
-		return INFO // Default log level
-	}
+	// Lenient: unknown values fall back to INFO (ParseLevel returns INFO + error).
+	lvl, _ := ParseLevel(level)
+	return lvl
 }
