@@ -513,7 +513,7 @@ logger.DisableAsync() // flushes and stops the worker
 Choose a drop strategy when the queue is full: `DropNew`, `DropOldest`, or
 `BlockWhenFull`. Batching lets the worker drain entries in chunks, while
 `FlushInterval` guarantees partially filled batches still reach the sink. Query
-`logger.AsyncStats()` to watch queue length and drops, and adjust behaviour at
+`logger.AsyncStats()` to watch queue length and drops, and adjust behavior at
 runtime with `SetDropStrategy`.
 
 ### Bridging to slog

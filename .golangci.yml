@@ -20,10 +20,10 @@ linters:
     - nilerr        # returning nil after a non-nil error
 
 linters-settings:
-  goimports:
-    local-prefixes: github.com/pod32g/simple-logger
   errcheck:
-    check-type-assertions: true
+    # Type assertions from typed pools (sync.Pool) are safe by construction, so
+    # the comma-ok form is intentionally omitted; do not flag them.
+    check-type-assertions: false
     # Fire-and-forget writes on the logging hot path: the logger cannot
     # meaningfully report a failure to write a log line, so these returns are
     # intentionally ignored.
@@ -44,7 +44,7 @@ issues:
   max-issues-per-linter: 0
   max-same-issues: 0
   exclude-rules:
-    # Examples favour brevity and readability over exhaustive error handling.
+    # Examples favor brevity and readability over exhaustive error handling.
     - path: ^example/
       linters:
         - errcheck

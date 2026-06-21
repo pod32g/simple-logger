@@ -1084,7 +1084,7 @@ func (l *Logger) EnableAsync(opts AsyncOptions) {
 	go l.asyncWorker(st)
 }
 
-// SetDropStrategy changes the behaviour when the async queue is full. It takes
+// SetDropStrategy changes the behavior when the async queue is full. It takes
 // effect immediately on the active async logger; it is a no-op when async
 // logging is disabled.
 func (l *Logger) SetDropStrategy(strategy DropStrategy) {

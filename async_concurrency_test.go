@@ -14,7 +14,7 @@ import (
 )
 
 // gatedWriter blocks on its first write until released, so a test can hold the
-// async worker busy while the queue fills, making drop behaviour deterministic.
+// async worker busy while the queue fills, making drop behavior deterministic.
 type gatedWriter struct {
 	buf     lockedBuffer
 	started chan struct{}
