@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+
+## [0.7.0] - 2026-06-21
 ### Added
 - `Logger.With(fields ...Field) *Logger` — derived loggers that bind persistent
   fields (e.g. per-request `request_id`) and share the parent's output, level,
@@ -75,6 +77,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   bits are not meaningful, allowing the suite to run on all platforms.
 - README examples no longer reference a non-existent package-level `log.Fatal`;
   they use `logger.Fatal`/`panic` as appropriate so the snippets compile.
+
+### Security
+- Bumped `go.opentelemetry.io/otel` to 1.41.0 to address a high-severity remote
+  DoS amplification in multi-value `baggage` header extraction (affecting
+  1.36.0–1.40.0), pulled in transitively by the new `bridge/oteltrace` package.
 
 ## [0.6.0] - 2025-11-09
 ### Added
