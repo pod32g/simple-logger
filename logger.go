@@ -297,6 +297,13 @@ func NewBurstSampler(window time.Duration, first, thereafter int) Sampler {
 	}
 }
 
+// burstSweepThreshold is the bucket count above which Allow sweeps expired
+// entries before adding another. Messages are routinely unique -- they carry
+// request IDs, URLs, wrapped error text -- and a bucket holds the message as its
+// key, so without a sweep the sampler installed to survive an error storm grows
+// for as long as the storm lasts.
+const burstSweepThreshold = 1024
+
 type burstBucket struct {
 	windowStart time.Time
 	count       int64
@@ -317,6 +324,9 @@ func (b *burstSampler) Allow(level LogLevel, message string, _ []Field) bool {
 	defer b.mu.Unlock()
 	bk := b.buckets[key]
 	if bk == nil || now.Sub(bk.windowStart) >= b.window {
+		if bk == nil && len(b.buckets) >= burstSweepThreshold {
+			b.sweepLocked(now)
+		}
 		bk = &burstBucket{windowStart: now}
 		b.buckets[key] = bk
 	}
@@ -328,6 +338,22 @@ func (b *burstSampler) Allow(level LogLevel, message string, _ []Field) bool {
 		return false
 	}
 	return (bk.count-b.first)%b.thereafter == 0
+}
+
+// sweepLocked drops buckets whose window has closed; they can only ever be
+// replaced by a fresh one, so keeping them holds a message string for nothing.
+// If every bucket is still live the map is reset instead: the alternative is to
+// keep growing, and rebuilding rate limits is cheaper than running out of
+// memory. b.mu must be held.
+func (b *burstSampler) sweepLocked(now time.Time) {
+	for key, bucket := range b.buckets {
+		if now.Sub(bucket.windowStart) >= b.window {
+			delete(b.buckets, key)
+		}
+	}
+	if len(b.buckets) >= burstSweepThreshold {
+		b.buckets = make(map[string]*burstBucket)
+	}
 }
 
 // NewLevelSampler applies a distinct sampler per level. Levels absent from the
