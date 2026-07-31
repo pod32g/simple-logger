@@ -21,7 +21,7 @@ func (r *recordOnlyExporter) Shutdown(context.Context) error { return nil }
 
 func TestHookPromotesTraceAndSpanIDs(t *testing.T) {
 	exp := &recordOnlyExporter{}
-	hook := NewHook(exp)
+	hook := NewHook(exp, WithSynchronousExport())
 
 	traceID := "0123456789abcdef0123456789abcdef" // 16 bytes
 	spanID := "0123456789abcdef"                  // 8 bytes
@@ -44,7 +44,7 @@ func TestHookPromotesTraceAndSpanIDs(t *testing.T) {
 
 func TestHookIgnoresMalformedTraceID(t *testing.T) {
 	exp := &recordOnlyExporter{}
-	hook := NewHook(exp)
+	hook := NewHook(exp, WithSynchronousExport())
 	hook.Fire(log.INFO, "msg", []log.Field{log.String("trace_id", "not-hex")})
 	if exp.record.TraceId != nil {
 		t.Errorf("malformed trace_id should be ignored, got %x", exp.record.TraceId)

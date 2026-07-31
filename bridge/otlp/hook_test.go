@@ -27,7 +27,7 @@ func (f *fakeExporter) Shutdown(context.Context) error { return nil }
 
 func TestHookExportsFields(t *testing.T) {
 	fake := &fakeExporter{}
-	hook := NewHook(fake, WithServiceName("simple"))
+	hook := NewHook(fake, WithServiceName("simple"), WithSynchronousExport())
 
 	hook.Fire(log.INFO, "hello", []log.Field{log.String("user", "alice")})
 

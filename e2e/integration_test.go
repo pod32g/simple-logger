@@ -126,6 +126,11 @@ func TestOTLPHookEndToEnd(t *testing.T) {
 
 	logger.InfoFields("otlp", log.String("key", "value"))
 
+	// The hook batches, so ask for delivery rather than waiting one out.
+	if err := hook.Flush(context.Background()); err != nil {
+		t.Fatalf("flushing the hook: %v", err)
+	}
+
 	select {
 	case rl := <-exporter.received:
 		if len(rl.ScopeLogs) == 0 || len(rl.ScopeLogs[0].LogRecords) == 0 {

@@ -39,7 +39,7 @@ func attrByKey(record *logspb.LogRecord, key string) *commonpb.AnyValue {
 
 func TestHookAttributeValueTypes(t *testing.T) {
 	exp := &recordingExporter{}
-	hook := NewHook(exp)
+	hook := NewHook(exp, WithSynchronousExport())
 
 	type custom struct{ A int }
 	hook.Fire(log.INFO, "types", []log.Field{
@@ -93,7 +93,7 @@ func TestHookSeverityMapping(t *testing.T) {
 	}
 	for _, tc := range cases {
 		exp := &recordingExporter{}
-		hook := NewHook(exp)
+		hook := NewHook(exp, WithSynchronousExport())
 		hook.Fire(tc.level, "msg", nil)
 		if exp.record.GetSeverityNumber() != tc.num {
 			t.Errorf("level %v: severity number got %v want %v", tc.level, exp.record.GetSeverityNumber(), tc.num)
@@ -106,7 +106,7 @@ func TestHookSeverityMapping(t *testing.T) {
 
 func TestHookResourceAttributes(t *testing.T) {
 	exp := &recordingExporter{}
-	hook := NewHook(exp, WithServiceName("checkout"), WithResourceAttribute("deployment.environment", "prod"))
+	hook := NewHook(exp, WithServiceName("checkout"), WithResourceAttribute("deployment.environment", "prod"), WithSynchronousExport())
 	hook.Fire(log.INFO, "msg", nil)
 
 	found := map[string]string{}
@@ -135,7 +135,7 @@ func (s *shutdownExporter) Shutdown(context.Context) error {
 func TestHookCloseShutsDownExporter(t *testing.T) {
 	sentinel := errors.New("shutdown failed")
 	exp := &shutdownExporter{err: sentinel}
-	hook := NewHook(exp)
+	hook := NewHook(exp, WithSynchronousExport())
 	if err := hook.Close(context.Background()); !errors.Is(err, sentinel) {
 		t.Fatalf("expected shutdown error propagated, got %v", err)
 	}
@@ -152,7 +152,7 @@ func (f *failingExporter) Shutdown(context.Context) error                     { 
 func TestHookErrorHandlerAndStats(t *testing.T) {
 	sentinel := errors.New("export failed")
 	var got error
-	hook := NewHook(&failingExporter{err: sentinel}, WithErrorHandler(func(err error) { got = err }))
+	hook := NewHook(&failingExporter{err: sentinel}, WithErrorHandler(func(err error) { got = err }), WithSynchronousExport())
 
 	hook.Fire(log.INFO, "msg", nil)
 
