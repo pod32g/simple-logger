@@ -679,6 +679,40 @@ func ParseLevel(s string) (LogLevel, error) {
 	}
 }
 
+// MarshalJSON encodes the level as its lower-case name, so a config written by
+// this package reads the way an operator would write one by hand.
+func (l LogLevel) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + strings.ToLower(l.String()) + `"`), nil
+}
+
+// UnmarshalJSON accepts either a level name ("debug", "WARN", "warning") or the
+// numeric value. Names are what every other entry point takes -- LOG_LEVEL, the
+// HTTP level endpoint -- so a JSON config that spells the level out should not
+// be the one place that rejects it.
+func (l *LogLevel) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var name string
+		if err := json.Unmarshal(data, &name); err != nil {
+			return err
+		}
+		lvl, err := ParseLevel(name)
+		if err != nil {
+			return err
+		}
+		*l = lvl
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(data, &n); err != nil {
+		return fmt.Errorf("log level must be a name or a number: %w", err)
+	}
+	if n < int(DEBUG) || n > int(FATAL) {
+		return fmt.Errorf("log level %d out of range", n)
+	}
+	*l = LogLevel(n)
+	return nil
+}
+
 // Formatter defines an interface for formatting log messages
 type Formatter interface {
 	Format(level LogLevel, message string) string

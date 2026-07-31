@@ -193,6 +193,15 @@ func ApplyConfig(config LoggerConfig) *Logger {
 
 // ConfigureLogger applies the provided configuration to an existing logger or creates a new one.
 func ConfigureLogger(logger *Logger, config LoggerConfig) (*Logger, error) {
+	// Build the formatter before opening anything: a formatter error used to
+	// return with the log file already open and unreachable, leaking a
+	// descriptor per attempt -- once per poll for a config watcher sitting on a
+	// file that names a custom formatter without supplying one.
+	formatter, err := formatterForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
 	var output io.Writer = os.Stdout
 	var closer io.Closer
 	// Filepath, when set, takes precedence over Output as a file destination.
@@ -221,11 +230,6 @@ func ConfigureLogger(logger *Logger, config LoggerConfig) (*Logger, error) {
 			output = file
 			closer = file
 		}
-	}
-
-	formatter, err := formatterForConfig(config)
-	if err != nil {
-		return nil, err
 	}
 
 	if df, ok := formatter.(*DefaultFormatter); ok {
