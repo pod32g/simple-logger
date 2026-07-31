@@ -1477,7 +1477,7 @@ func (f *DefaultFormatter) IncludeCallerInfo() bool { return f.IncludeCaller }
 // FormatWithCallerTo implements CallerAwareFormatter.
 func (f *DefaultFormatter) FormatWithCallerTo(level LogLevel, message string, fields []Field, caller Caller, w io.Writer) {
 	f.writeFrame(level, w, &caller, func(writer io.Writer) {
-		io.WriteString(writer, message)
+		writeTextSafe(writer, message)
 		writeFieldsText(writer, fields, message != "")
 	})
 }
@@ -1539,7 +1539,7 @@ func (f *DefaultFormatter) Format(level LogLevel, message string) string {
 
 func (f *DefaultFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
 	f.writeFrame(level, w, nil, func(writer io.Writer) {
-		io.WriteString(writer, message)
+		writeTextSafe(writer, message)
 	})
 }
 
@@ -1554,7 +1554,7 @@ func (f *DefaultFormatter) FormatWithFields(level LogLevel, message string, fiel
 
 func (f *DefaultFormatter) FormatWithFieldsTo(level LogLevel, message string, fields []Field, w io.Writer) {
 	f.writeFrame(level, w, nil, func(writer io.Writer) {
-		io.WriteString(writer, message)
+		writeTextSafe(writer, message)
 		writeFieldsText(writer, fields, message != "")
 	})
 }
@@ -2045,7 +2045,7 @@ func appendFieldsToMessage(message string, fields []Field) string {
 	b := builderPool.Get().(*strings.Builder)
 	b.Reset()
 	if message != "" {
-		b.WriteString(message)
+		writeTextSafe(b, message)
 		writeFieldsText(b, fields, true)
 	} else {
 		writeFieldsText(b, fields, false)
@@ -2066,14 +2066,37 @@ func writeFieldsText(w io.Writer, fields []Field, prefixSpace bool) {
 	}
 }
 
+// containsControl reports whether s holds a character that would break a
+// line-oriented log record.
+func containsControl(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// writeTextSafe writes s, quoting it if it contains control characters. Without
+// this a newline inside a message or a field value ends the record, and whatever
+// follows reads as a genuine entry of its own -- log forging, using data that
+// often comes straight from a request.
+func writeTextSafe(w io.Writer, s string) {
+	if !containsControl(s) {
+		io.WriteString(w, s)
+		return
+	}
+	io.WriteString(w, strconv.Quote(s))
+}
+
 func writeFieldValueText(w io.Writer, val interface{}) {
 	if s, ok := encodeTextWithRegistry(val); ok {
-		io.WriteString(w, s)
+		writeTextSafe(w, s)
 		return
 	}
 	switch v := val.(type) {
 	case string:
-		io.WriteString(w, v)
+		writeTextSafe(w, v)
 	case int:
 		var buf [20]byte
 		w.Write(strconv.AppendInt(buf[:0], int64(v), 10))
@@ -2099,11 +2122,11 @@ func writeFieldValueText(w io.Writer, val interface{}) {
 			w.Write([]byte("false"))
 		}
 	case fmt.Stringer:
-		io.WriteString(w, v.String())
+		writeTextSafe(w, v.String())
 	case error:
-		io.WriteString(w, v.Error())
+		writeTextSafe(w, v.Error())
 	default:
-		fmt.Fprint(w, v)
+		writeTextSafe(w, fmt.Sprint(v))
 	}
 }
 

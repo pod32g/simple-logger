@@ -66,7 +66,7 @@ func (f *ConsoleFormatter) FormatWithFieldsTo(level LogLevel, message string, fi
 	io.WriteString(w, f.color(levelColors[level], lvl))
 	if message != "" {
 		io.WriteString(w, " ")
-		io.WriteString(w, message)
+		writeTextSafe(w, message)
 	}
 	for _, field := range fields {
 		io.WriteString(w, " ")
