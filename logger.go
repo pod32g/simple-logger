@@ -2322,6 +2322,45 @@ func writeValue(b *strings.Builder, val interface{}) {
 	}
 }
 
+// logf formats and logs a message, but only once the level has been checked --
+// the point of the *f methods over Info(fmt.Sprintf(...)), which formats whether
+// or not the entry survives.
+func (l *Logger) logf(level LogLevel, format string, args ...interface{}) {
+	if level < LogLevel(l.level.Load()) {
+		return
+	}
+	l.logEntry(level, fmt.Sprintf(format, args...), true, nil, nil)
+}
+
+// Debugf logs a formatted debug message. The message is only formatted if DEBUG
+// is enabled.
+func (l *Logger) Debugf(format string, args ...interface{}) {
+	l.logf(DEBUG, format, args...)
+}
+
+// Infof logs a formatted info message. The message is only formatted if INFO is
+// enabled.
+func (l *Logger) Infof(format string, args ...interface{}) {
+	l.logf(INFO, format, args...)
+}
+
+// Warnf logs a formatted warning. The message is only formatted if WARN is
+// enabled.
+func (l *Logger) Warnf(format string, args ...interface{}) {
+	l.logf(WARN, format, args...)
+}
+
+// Errorf logs a formatted error. The message is only formatted if ERROR is
+// enabled.
+func (l *Logger) Errorf(format string, args ...interface{}) {
+	l.logf(ERROR, format, args...)
+}
+
+// Fatalf logs a formatted fatal message and exits the application.
+func (l *Logger) Fatalf(format string, args ...interface{}) {
+	l.logf(FATAL, format, args...)
+}
+
 // Debug logs a debug message
 func (l *Logger) Debug(v ...interface{}) {
 	l.log(DEBUG, v...)
