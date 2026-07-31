@@ -363,7 +363,29 @@ type logRequest struct {
 	hasMessage bool
 	fields     []Field
 	args       []interface{}
+	caller     *Caller       // call site resolved by the producer, nil to resolve at format time
 	flush      chan struct{} // non-nil marks a Flush barrier rather than an entry
+}
+
+// Caller is a resolved source location.
+type Caller struct {
+	File string
+	Line int
+}
+
+// CallerAwareFormatter is an optional Formatter extension for formatters that
+// render caller information. The logger resolves the call site on the goroutine
+// that logged (it has to: an async entry is formatted on the worker, whose stack
+// says nothing about who logged) and passes it here instead of letting the
+// formatter walk an unrelated stack. Formatters that do not implement it still
+// work; they just resolve their own caller, which is only meaningful in
+// synchronous mode.
+type CallerAwareFormatter interface {
+	// IncludeCallerInfo reports whether the formatter renders the call site, so
+	// the logger can skip resolving one that would be thrown away.
+	IncludeCallerInfo() bool
+	// FormatWithCallerTo renders an entry using the supplied call site.
+	FormatWithCallerTo(level LogLevel, message string, fields []Field, caller Caller, w io.Writer)
 }
 
 // Redactor transforms fields before they are formatted or dispatched to hooks,
@@ -1165,7 +1187,7 @@ func (l *Logger) asyncWorker(st *asyncState) {
 				close(req.flush)
 				continue
 			}
-			l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args)
+			l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args, req.caller)
 		}
 		return
 	}
@@ -1209,7 +1231,7 @@ func (l *Logger) asyncWorker(st *asyncState) {
 
 	flush := func() {
 		for _, req := range batch {
-			l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args)
+			l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args, req.caller)
 		}
 		batch = batch[:0]
 		if flushInterval > 0 {
@@ -1441,7 +1463,21 @@ func basename(path string) string {
 	return path
 }
 
-func (f *DefaultFormatter) writeFrame(level LogLevel, w io.Writer, messageWriter func(io.Writer)) {
+// IncludeCallerInfo implements CallerAwareFormatter.
+func (f *DefaultFormatter) IncludeCallerInfo() bool { return f.IncludeCaller }
+
+// FormatWithCallerTo implements CallerAwareFormatter.
+func (f *DefaultFormatter) FormatWithCallerTo(level LogLevel, message string, fields []Field, caller Caller, w io.Writer) {
+	f.writeFrame(level, w, &caller, func(writer io.Writer) {
+		io.WriteString(writer, message)
+		writeFieldsText(writer, fields, message != "")
+	})
+}
+
+// writeFrame renders the timestamp/caller/level prefix. A non-nil caller was
+// resolved by the logger on the goroutine that logged; otherwise the call site
+// is resolved here, from this goroutine's stack.
+func (f *DefaultFormatter) writeFrame(level LogLevel, w io.Writer, caller *Caller, messageWriter func(io.Writer)) {
 	var tmp [128]byte
 	b := tmp[:0]
 	now := f.now()
@@ -1451,7 +1487,12 @@ func (f *DefaultFormatter) writeFrame(level LogLevel, w io.Writer, messageWriter
 		b = appendTimestampSlice(b, now)
 	}
 	if f.IncludeCaller {
-		file, line := resolveCaller(0)
+		file, line := "", 0
+		if caller != nil {
+			file, line = caller.File, caller.Line
+		} else {
+			file, line = resolveCaller(0)
+		}
 		b = append(b, ' ', '-', ' ')
 		b = append(b, file...)
 		b = append(b, ':')
@@ -1489,7 +1530,7 @@ func (f *DefaultFormatter) Format(level LogLevel, message string) string {
 }
 
 func (f *DefaultFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
-	f.writeFrame(level, w, func(writer io.Writer) {
+	f.writeFrame(level, w, nil, func(writer io.Writer) {
 		io.WriteString(writer, message)
 	})
 }
@@ -1504,7 +1545,7 @@ func (f *DefaultFormatter) FormatWithFields(level LogLevel, message string, fiel
 }
 
 func (f *DefaultFormatter) FormatWithFieldsTo(level LogLevel, message string, fields []Field, w io.Writer) {
-	f.writeFrame(level, w, func(writer io.Writer) {
+	f.writeFrame(level, w, nil, func(writer io.Writer) {
 		io.WriteString(writer, message)
 		writeFieldsText(writer, fields, message != "")
 	})
@@ -1512,7 +1553,7 @@ func (f *DefaultFormatter) FormatWithFieldsTo(level LogLevel, message string, fi
 
 // FormatArgs implements ArgsFormatter for DefaultFormatter to avoid intermediate string allocations
 func (f *DefaultFormatter) FormatArgs(level LogLevel, w io.Writer, v ...interface{}) {
-	f.writeFrame(level, w, func(writer io.Writer) {
+	f.writeFrame(level, w, nil, func(writer io.Writer) {
 		for i, val := range v {
 			if i > 0 {
 				writer.Write([]byte{' '})
@@ -1523,7 +1564,7 @@ func (f *DefaultFormatter) FormatArgs(level LogLevel, w io.Writer, v ...interfac
 }
 
 func (f *DefaultFormatter) FormatArgsWithFields(level LogLevel, fields []Field, w io.Writer, v ...interface{}) {
-	f.writeFrame(level, w, func(writer io.Writer) {
+	f.writeFrame(level, w, nil, func(writer io.Writer) {
 		wrote := false
 		for i, val := range v {
 			if i > 0 {
@@ -1554,7 +1595,21 @@ func (f *JSONFormatter) now() time.Time {
 	return time.Now()
 }
 
-func (f *JSONFormatter) formatBuffer(level LogLevel, message string, fields []Field, buf *bytes.Buffer) {
+// IncludeCallerInfo implements CallerAwareFormatter.
+func (f *JSONFormatter) IncludeCallerInfo() bool { return f.IncludeCaller }
+
+// FormatWithCallerTo implements CallerAwareFormatter.
+func (f *JSONFormatter) FormatWithCallerTo(level LogLevel, message string, fields []Field, caller Caller, w io.Writer) {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	f.formatBuffer(level, message, fields, &caller, buf)
+	buf.WriteTo(w)
+	bufferPool.Put(buf)
+}
+
+// formatBuffer renders one entry. A non-nil caller was resolved by the logger on
+// the goroutine that logged; otherwise the call site is resolved here.
+func (f *JSONFormatter) formatBuffer(level LogLevel, message string, fields []Field, caller *Caller, buf *bytes.Buffer) {
 	now := f.now()
 	buf.WriteString(`{"timestamp":"`)
 	if f.TimeLayout != "" {
@@ -1567,7 +1622,12 @@ func (f *JSONFormatter) formatBuffer(level LogLevel, message string, fields []Fi
 	buf.WriteString(`","message":`)
 	buf.WriteString(strconv.Quote(message))
 	if f.IncludeCaller {
-		file, line := resolveCaller(0)
+		file, line := "", 0
+		if caller != nil {
+			file, line = caller.File, caller.Line
+		} else {
+			file, line = resolveCaller(0)
+		}
 		buf.WriteString(`,"file":`)
 		buf.WriteString(strconv.Quote(file))
 		buf.WriteString(`,"line":`)
@@ -1580,7 +1640,7 @@ func (f *JSONFormatter) formatBuffer(level LogLevel, message string, fields []Fi
 func (f *JSONFormatter) Format(level LogLevel, message string) string {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	f.formatBuffer(level, message, nil, buf)
+	f.formatBuffer(level, message, nil, nil, buf)
 	s := buf.String()
 	bufferPool.Put(buf)
 	return s
@@ -1589,7 +1649,7 @@ func (f *JSONFormatter) Format(level LogLevel, message string) string {
 func (f *JSONFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	f.formatBuffer(level, message, nil, buf)
+	f.formatBuffer(level, message, nil, nil, buf)
 	buf.WriteTo(w)
 	bufferPool.Put(buf)
 }
@@ -1600,7 +1660,7 @@ func (f *JSONFormatter) FormatArgs(level LogLevel, w io.Writer, v ...interface{}
 	msg := buildMessage(v...)
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	f.formatBuffer(level, msg, nil, buf)
+	f.formatBuffer(level, msg, nil, nil, buf)
 	buf.WriteTo(w)
 	bufferPool.Put(buf)
 }
@@ -1608,7 +1668,7 @@ func (f *JSONFormatter) FormatArgs(level LogLevel, w io.Writer, v ...interface{}
 func (f *JSONFormatter) FormatWithFields(level LogLevel, message string, fields []Field) string {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	f.formatBuffer(level, message, fields, buf)
+	f.formatBuffer(level, message, fields, nil, buf)
 	s := buf.String()
 	bufferPool.Put(buf)
 	return s
@@ -1617,7 +1677,7 @@ func (f *JSONFormatter) FormatWithFields(level LogLevel, message string, fields 
 func (f *JSONFormatter) FormatWithFieldsTo(level LogLevel, message string, fields []Field, w io.Writer) {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	f.formatBuffer(level, message, fields, buf)
+	f.formatBuffer(level, message, fields, nil, buf)
 	buf.WriteTo(w)
 	bufferPool.Put(buf)
 }
@@ -1626,7 +1686,7 @@ func (f *JSONFormatter) FormatArgsWithFields(level LogLevel, fields []Field, w i
 	msg := buildMessage(v...)
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	f.formatBuffer(level, msg, fields, buf)
+	f.formatBuffer(level, msg, fields, nil, buf)
 	buf.WriteTo(w)
 	bufferPool.Put(buf)
 }
@@ -1666,11 +1726,16 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 		}
 
 		if ch := l.asyncChannel(); ch != nil {
+			// Capture anything that describes the caller *here*, on the
+			// goroutine that logged. Resolved on the worker it would describe
+			// the worker instead.
+			fields = l.withStacktrace(level, fields)
 			req := logRequest{
 				level:      level,
 				message:    message,
 				hasMessage: hasMessage,
 				fields:     cloneFields(fields),
+				caller:     l.resolveCallerForFormatter(),
 			}
 			if len(args) > 0 {
 				req.args = cloneArgs(args)
@@ -1678,13 +1743,53 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 			if l.enqueueAsync(req) {
 				return
 			}
+			l.logEntrySync(level, message, hasMessage, fields, args, req.caller)
+			return
 		}
+	} else if l.async.Load() != nil {
+		// Everything already queued explains why we are dying. Write it out
+		// before os.Exit takes the queue with it.
+		l.Flush()
 	}
 
-	l.logEntrySync(level, message, hasMessage, fields, args)
+	fields = l.withStacktrace(level, fields)
+	l.logEntrySync(level, message, hasMessage, fields, args, nil)
 }
 
-func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, fields []Field, args []interface{}) {
+// withStacktrace appends the caller's stack for error-level entries when
+// automatic capture is enabled. It copies rather than appending in place, so a
+// caller's fields array is never written through.
+func (l *Logger) withStacktrace(level LogLevel, fields []Field) []Field {
+	if !l.includeStacktrace.Load() || level < ERROR {
+		return fields
+	}
+	for _, f := range fields {
+		if f.Key == "stacktrace" {
+			return fields
+		}
+	}
+	out := make([]Field, 0, len(fields)+1)
+	out = append(out, fields...)
+	return append(out, String("stacktrace", string(debug.Stack())))
+}
+
+// resolveCallerForFormatter resolves the call site when the active formatter
+// renders one, and returns nil otherwise so the cost is only paid when the
+// result is used.
+func (l *Logger) resolveCallerForFormatter() *Caller {
+	fh := l.formatter.Load()
+	if fh == nil || fh.f == nil {
+		return nil
+	}
+	caf, ok := fh.f.(CallerAwareFormatter)
+	if !ok || !caf.IncludeCallerInfo() {
+		return nil
+	}
+	file, line := resolveCaller(0)
+	return &Caller{File: file, Line: line}
+}
+
+func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, fields []Field, args []interface{}, caller *Caller) {
 	fh := l.formatter.Load()
 	if fh == nil || fh.f == nil {
 		return
@@ -1718,19 +1823,6 @@ func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, f
 		}
 	}
 
-	if l.includeStacktrace.Load() && level >= ERROR {
-		hasStack := false
-		for _, f := range fields {
-			if f.Key == "stacktrace" {
-				hasStack = true
-				break
-			}
-		}
-		if !hasStack {
-			fields = append(fields, String("stacktrace", string(debug.Stack())))
-		}
-	}
-
 	// Mask/dedup/truncate fields once, before both hooks and the formatter see them.
 	fields = l.normalizeFields(fields)
 
@@ -1751,7 +1843,9 @@ func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, f
 		}
 	}
 
-	if len(fields) == 0 && len(args) > 0 {
+	// The args fast path cannot carry a pre-resolved call site, so it is skipped
+	// when one was captured (async mode with a caller-rendering formatter).
+	if caller == nil && len(fields) == 0 && len(args) > 0 {
 		if af, ok := formatter.(ArgsFormatter); ok {
 			write(func(w io.Writer) {
 				af.FormatArgs(level, w, args...)
@@ -1784,6 +1878,15 @@ func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, f
 				continue
 			}
 			l.fireHook(reg.target, level, resolvedMessage, fields)
+		}
+	}
+
+	if caller != nil {
+		if caf, ok := formatter.(CallerAwareFormatter); ok {
+			write(func(w io.Writer) {
+				caf.FormatWithCallerTo(level, resolvedMessage, fields, *caller, w)
+			})
+			return
 		}
 	}
 
@@ -1854,10 +1957,18 @@ func (l *Logger) Close() error {
 	return firstErr
 }
 
+// resolveCaller reports the first frame outside this package, i.e. the code that
+// called the logger.
+//
+// Frames are expanded with runtime.CallersFrames rather than read straight off
+// the PC with FuncForPC: a PC can stand for several logical frames once the
+// compiler inlines, and FuncForPC reports only the outermost one, which puts the
+// file and line somewhere unrelated to the call site. Each PC's own result is
+// cacheable (its inline chain is fixed), so the walk stays cheap.
 func resolveCaller(extraSkip int) (string, int) {
-	const depth = 12
+	const depth = 16
 	var pcs [depth]uintptr
-	n := runtime.Callers(3+extraSkip, pcs[:])
+	n := runtime.Callers(2+extraSkip, pcs[:])
 	if n == 0 {
 		return "unknown", 0
 	}
@@ -1870,29 +1981,25 @@ func resolveCaller(extraSkip int) (string, int) {
 			if ce.skip {
 				continue
 			}
-			if ce.file != "" {
-				return ce.file, ce.line
+			return ce.file, ce.line
+		}
+
+		entry := callerEntry{skip: true}
+		frames := runtime.CallersFrames([]uintptr{pc})
+		for {
+			frame, more := frames.Next()
+			if frame.Function != "" && !strings.HasPrefix(frame.Function, packagePrefix) {
+				entry = callerEntry{file: basename(frame.File), line: frame.Line}
+				break
+			}
+			if !more {
+				break
 			}
 		}
-
-		fn := runtime.FuncForPC(pc)
-		if fn == nil {
-			callerCache.Store(pc, callerEntry{skip: true})
-			continue
-		}
-
-		if strings.HasPrefix(fn.Name(), packagePrefix) {
-			callerCache.Store(pc, callerEntry{skip: true})
-			continue
-		}
-
-		file, line := fn.FileLine(pc - 1)
-		entry := callerEntry{
-			file: basename(file),
-			line: line,
-		}
 		callerCache.Store(pc, entry)
-		return entry.file, entry.line
+		if !entry.skip {
+			return entry.file, entry.line
+		}
 	}
 	return "unknown", 0
 }
@@ -2252,10 +2359,34 @@ func (l *Logger) enqueueAsync(req logRequest) bool {
 		case ch <- req:
 			return true
 		default:
-			select {
-			case <-ch:
-				l.asyncDrops.Add(1)
-			default:
+			// Free a slot by discarding the oldest entry -- but never a Flush
+			// barrier. A dropped barrier is never closed by the worker, which
+			// would leave Flush (and Sync) blocked for the life of the process.
+			// Barriers encountered while looking for something to drop are set
+			// aside and re-queued behind it.
+			var barriers []logRequest
+			for done := false; !done; {
+				select {
+				case old := <-ch:
+					if old.flush != nil {
+						barriers = append(barriers, old)
+						continue
+					}
+					l.asyncDrops.Add(1)
+					done = true
+				default:
+					// Nothing droppable left; the queue drained under us.
+					done = true
+				}
+			}
+			for _, b := range barriers {
+				select {
+				case ch <- b:
+				default:
+					// Unreachable in practice (we only re-queue what we took).
+					// Release the waiter rather than strand it.
+					close(b.flush)
+				}
 			}
 			select {
 			case ch <- req:
