@@ -758,15 +758,18 @@ type Logger struct {
 // copied) by every logger derived via With, so a single SetOutput/SetLevel/etc.
 // is observed by the whole family of derived loggers.
 type loggerCore struct {
-	level             atomic.Int32
-	output            atomic.Pointer[writerHolder]
-	formatter         atomic.Pointer[formatterHolder]
-	sampler           atomic.Pointer[samplerHolder]
-	hooksMu           sync.RWMutex
-	hooks             []hookRegistration
-	writeMu           sync.Mutex
+	level     atomic.Int32
+	output    atomic.Pointer[writerHolder]
+	formatter atomic.Pointer[formatterHolder]
+	sampler   atomic.Pointer[samplerHolder]
+	hooksMu   sync.RWMutex
+	hooks     []hookRegistration
+	// writeMu guards the output. Synchronized writes take it exclusively;
+	// unsynchronized writes take it for reading, which still lets them run
+	// concurrently with each other but lets a writer swap or a Close wait for
+	// them to finish.
+	writeMu           sync.RWMutex
 	closer            io.Closer
-	retiredClosers    []io.Closer // previous closers awaiting Close (non-sync swaps)
 	syncWrites        atomic.Bool
 	extractor         atomic.Pointer[extractorHolder]
 	includeStacktrace atomic.Bool
@@ -858,17 +861,10 @@ func (l *Logger) SetOutputWithCloser(output io.Writer, closer io.Closer) {
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	if l.closer != nil && l.closer != closer {
-		if l.syncWrites.Load() {
-			// Synchronized writes hold writeMu (which we hold here), so no
-			// in-flight writer can still reference the previous writer. Closing
-			// it now is safe, and the close error is not actionable.
-			_ = l.closer.Close()
-		} else {
-			// In non-synchronized mode writers do not take writeMu, so another
-			// goroutine may still hold the previous writer. Closing it now would
-			// be a use-after-close. Defer the close until Close() instead.
-			l.retiredClosers = append(l.retiredClosers, l.closer)
-		}
+		// Holding writeMu exclusively excludes in-flight writers in both modes,
+		// so nothing can still be holding the previous writer and it can be
+		// closed here. The close error is not actionable.
+		_ = l.closer.Close()
 	}
 	l.output.Store(&writerHolder{w: output})
 	l.closer = closer
@@ -1877,7 +1873,12 @@ func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, f
 			fn(ec)
 			l.writeMu.Unlock()
 		} else {
+			// Shared rather than unguarded: concurrent writes still proceed in
+			// parallel, but a writer swap or Close can wait them out instead of
+			// closing a writer somebody is still using.
+			l.writeMu.RLock()
 			fn(ec)
+			l.writeMu.RUnlock()
 		}
 		l.reportWriteError(ec.err)
 		if level == FATAL {
@@ -1975,21 +1976,15 @@ func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, f
 	})
 }
 
-// Close releases any resources owned by the logger, such as open files. It also
-// closes any writers that were retired by SetOutputWithCloser while the logger
-// was in non-synchronized mode (see SetSynchronized). The first close error, if
+// Close releases any resources owned by the logger, such as open files. Writers
+// superseded by a later SetOutputWithCloser are closed at the point they are
+// replaced, so only the current one is left to close here. The close error, if
 // any, is returned.
 func (l *Logger) Close() error {
 	l.DisableAsync()
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	var firstErr error
-	for _, c := range l.retiredClosers {
-		if err := c.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	l.retiredClosers = nil
 	if l.closer != nil {
 		if err := l.closer.Close(); err != nil && firstErr == nil {
 			firstErr = err
