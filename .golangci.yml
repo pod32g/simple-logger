@@ -1,55 +1,72 @@
-# golangci-lint configuration (v1.x).
+# golangci-lint configuration (v2.x). Migrated from the v1 schema with
+# `golangci-lint migrate`; gosimple folded into staticcheck and goimports
+# moved to formatters as part of that move.
 # Run locally with: golangci-lint run ./...
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
 linters:
-  disable-all: true
+  default: none
   enable:
-    - errcheck      # unchecked errors
-    - govet         # suspicious constructs
-    - ineffassign   # ineffective assignments
-    - staticcheck   # broad correctness/style suite
-    - unused        # unused code
-    - gosimple      # simplifications
-    - misspell      # common spelling mistakes
-    - unconvert     # redundant type conversions
-    - goimports     # import grouping/formatting
-    - bodyclose     # unclosed HTTP response bodies
-    - nilerr        # returning nil after a non-nil error
-
-linters-settings:
-  errcheck:
-    # Type assertions from typed pools (sync.Pool) are safe by construction, so
-    # the comma-ok form is intentionally omitted; do not flag them.
-    check-type-assertions: false
-    # Fire-and-forget writes on the logging hot path: the logger cannot
-    # meaningfully report a failure to write a log line, so these returns are
-    # intentionally ignored.
-    exclude-functions:
-      - (io.Writer).Write
-      - io.WriteString
-      - (*bytes.Buffer).Write
-      - (*bytes.Buffer).WriteByte
-      - (*bytes.Buffer).WriteString
-      - (*bytes.Buffer).WriteTo
-      - fmt.Fprint
-      - fmt.Fprintf
-      - fmt.Fprintln
-  misspell:
-    locale: US
-
+    - bodyclose
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    errcheck:
+      # Type assertions from typed pools (sync.Pool) are safe by construction, so
+      # the comma-ok form is intentionally omitted; do not flag them.
+      check-type-assertions: false
+      # Fire-and-forget writes on the logging hot path: the logger cannot
+      # meaningfully report a failure to write a log line, so these returns are
+      # intentionally ignored.
+      exclude-functions:
+        - (io.Writer).Write
+        - io.WriteString
+        - (*bytes.Buffer).Write
+        - (*bytes.Buffer).WriteByte
+        - (*bytes.Buffer).WriteString
+        - (*bytes.Buffer).WriteTo
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Examples favor brevity and readability over exhaustive error handling.
+      - linters:
+          - bodyclose
+          - errcheck
+        path: ^example/
+      # Tests routinely ignore returns from helpers; that is acceptable.
+      - linters:
+          - errcheck
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    # Examples favor brevity and readability over exhaustive error handling.
-    - path: ^example/
-      linters:
-        - errcheck
-        - bodyclose
-    # Tests routinely ignore returns from helpers; that is acceptable.
-    - path: _test\.go
-      linters:
-        - errcheck
+formatters:
+  enable:
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

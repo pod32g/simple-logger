@@ -95,7 +95,7 @@ func TestLoggerWithBoundFieldsPrecedeCallFields(t *testing.T) {
 	if ib < 0 || ic < 0 || ik < 0 {
 		t.Fatalf("expected bound, ctx and call fields all present, got %q", out)
 	}
-	if !(ib < ic && ic < ik) {
+	if ib >= ic || ic >= ik {
 		t.Fatalf("expected order bound < ctx < call, got positions %d,%d,%d in %q", ib, ic, ik, out)
 	}
 }

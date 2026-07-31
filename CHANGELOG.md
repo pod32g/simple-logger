@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Security
+- Updated dependencies to clear known vulnerabilities: `google.golang.org/grpc`
+  to 1.82.1 (xDS RBAC and HTTP/2 issues, high), `golang.org/x/net` to 0.56.0
+  (HTML parser DoS, plus a later advisory that affects 0.55.0), `golang.org/x/text`
+  to 0.39.0 and `go.opentelemetry.io/otel` to 1.44.0. None were reachable from
+  this module; `govulncheck` reports no vulnerabilities.
+
+### Changed
+- **The minimum Go version is now 1.25.** The patched `google.golang.org/grpc`
+  declares `go 1.25.0`, so the module follows. Note that grpc reaches this module
+  only through `example/grpc_interceptor` — no package in the library itself
+  imports it.
+
 ### Added
 - `Debugf`/`Infof`/`Warnf`/`Errorf`/`Fatalf` printf-style methods. They check the
   level before formatting, so a disabled `Debugf` costs nothing — unlike the
