@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Added
+- `Debugf`/`Infof`/`Warnf`/`Errorf`/`Fatalf` printf-style methods. They check the
+  level before formatting, so a disabled `Debugf` costs nothing — unlike the
+  `Info(fmt.Sprintf(...))` workaround they replace. `go vet` checks their format
+  strings at call sites.
+- `CallerAwareFormatter`, an optional formatter interface that receives a call
+  site resolved by the logger rather than walking its own stack.
+- OTLP hook: `Flush`, plus `WithBatchSize`, `WithFlushInterval`, `WithQueueSize`,
+  `WithExportTimeout` and `WithSynchronousExport`. `HookStats` gains `Dropped`
+  and `Queued`.
+- `LogLevel` implements `json.Marshaler`/`json.Unmarshaler`, so JSON configs can
+  name the level (`{"level":"debug"}`) as every other entry point already did.
+
+### Fixed
+- `Flush()` could block forever: under `DropOldest` a producer freeing a queue
+  slot could discard the flush barrier, which nothing then closed. Barriers are
+  now preserved and re-queued behind the dropped entry.
+- `Fatal` exited without draining the async queue, discarding the entries that
+  explained why the process was dying. It now flushes first.
+- Caller and stacktrace capture ran on the async worker, so `IncludeCaller`
+  reported an unrelated location and automatic stacktraces showed the worker's
+  stack. Both are now captured on the goroutine that logged.
+- Caller resolution read file and line straight off the PC, which reports the
+  wrong function once the compiler inlines — `IncludeCaller` was inaccurate in
+  synchronous mode too. Frames are now expanded with `runtime.CallersFrames`.
+- `JSONFormatter` could emit unparseable entries: field keys were written
+  unescaped (a crafted key could also forge fields), and strings were quoted with
+  `strconv.Quote`, which produces Go escapes such as `\xNN` and `\U0001d173` that
+  JSON does not accept.
+- Field and message truncation cut on byte boundaries, splitting UTF-8 runes and
+  so manufacturing the invalid input above. The cut now backs off to a boundary.
+- Text output did not escape control characters, so a newline in a message or a
+  field value ended the record and forged a new one.
+- `ConfigureLogger` opened the log file before building the formatter and leaked
+  the descriptor when formatter construction failed — once per poll under a
+  config watcher.
+- `NewBurstSampler` never removed buckets, so high-cardinality messages grew its
+  map without bound (~25 MiB per 200k distinct messages). Closed windows are now
+  swept.
+- Writers superseded by `SetOutputWithCloser` were held open until `Close` in
+  unsynchronized mode; they are now closed when replaced.
+- The slog bridge ignored the logger's level, so runtime level changes (including
+  the `httplog` level endpoint) could never turn slog output back up. A nil
+  `Leveler` now follows the logger.
+
+### Changed
+- **The OTLP hook batches by default.** Records are queued and exported in
+  batches (512 records or 1s) with a 10s per-export deadline, instead of one
+  synchronous, unbounded gRPC round trip per entry on the logging goroutine.
+  Close (or flush) the hook before exit, or use `WithSynchronousExport` to keep
+  the previous behaviour.
+- Text output quotes values containing control characters, so an automatic
+  stacktrace field now renders as a single quoted line.
+- Unsynchronized writes take a read lock. They still proceed concurrently, but a
+  writer swap or `Close` now waits for them instead of closing underneath them.
 
 ## [0.7.0] - 2026-06-21
 ### Added

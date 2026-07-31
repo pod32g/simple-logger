@@ -103,6 +103,13 @@ func main() {
 
 You can set the logging level to control the verbosity of the logger. Available levels are `DEBUG`, `INFO`, `WARN`, `ERROR`, and `FATAL`.
 
+In a JSON config file the level may be written either as a name or as a number,
+matching `LOG_LEVEL` and the HTTP level endpoint:
+
+```json
+{"level": "debug", "format": "json"}
+```
+
 #### Example: Changing Log Level at Runtime
 
 ```go
@@ -248,6 +255,19 @@ logger.InfoFields(
 Field helpers include `String`, `Int`, `Int64`, `Uint`, `Float64`, `Bool`,
 `Error`, and `Any` for arbitrary values. You can mix traditional variadic calls
 with structured logging as needed.
+
+### Formatted Messages
+
+`Debugf`, `Infof`, `Warnf`, `Errorf`, and `Fatalf` take a format string:
+
+```go
+logger.Errorf("upload %s failed after %d retries", name, attempts)
+```
+
+They check the level before formatting, so a `Debugf` on a hot path costs
+nothing when `DEBUG` is disabled — unlike `logger.Debug(fmt.Sprintf(...))`, which
+formats whether or not the entry survives. Because they follow the printf naming
+convention, `go vet` checks the format strings at your call sites.
 
 ### Derived Loggers with Bound Fields
 
@@ -521,12 +541,15 @@ runtime with `SetDropStrategy`.
 Use the `bridge/slogbridge` package to route `slog` output into `simple-logger`:
 
 ```go
-handler := slogbridge.NewHandler(logger, slog.LevelInfo)
+handler := slogbridge.NewHandler(logger, nil) // nil: follow the logger's level
 logger := slog.New(handler)
 logger.Info("hello", slog.String("user", "alice"))
 ```
 
-Structured attributes, groups, and context metadata are preserved.
+Structured attributes, groups, and context metadata are preserved. Pass `nil` as
+the level to track the logger's own level, so `SetLevel` (or the HTTP level
+endpoint) reaches slog callers too; pass an explicit `slog.Leveler` to gate slog
+independently of the logger.
 
 ### OTLP Export Hook
 
@@ -548,6 +571,20 @@ The hook converts log entries into OTLP `ResourceLogs`; you can adapt any export
 implementing the simple `otlp.Exporter` interface. Export failures are counted
 (`hook.Stats().Failed`) and, when `WithErrorHandler` is supplied, reported to your
 callback instead of being silently dropped.
+
+Records are queued and exported in batches by a background goroutine, so a log
+call never waits on the collector, and each export carries a deadline. **Close
+the hook before the process exits**, or records still queued are lost:
+
+```go
+defer hook.Close(context.Background()) // exports what is pending, then shuts down
+hook.Flush(ctx)                        // or force delivery at a chosen point
+```
+
+Tune with `WithBatchSize`, `WithFlushInterval`, `WithQueueSize`, and
+`WithExportTimeout`. When the queue is full, records are dropped and counted in
+`hook.Stats().Dropped` rather than blocking the application. `WithSynchronousExport`
+exports inline instead, coupling log calls to collector latency.
 
 ### File Rotation
 
@@ -683,6 +720,7 @@ Happy logging!
 - **Resource management:** `ApplyConfig` and `SetOutputWithCloser` can own file handles; remember to call `logger.Close()` when you are done to release resources promptly.
 - **Caller information overhead:** Enabling caller reporting requires walking the call stack, which adds latency to every log call. The default configuration leaves caller reporting disabled to avoid this cost.
 - **JSON caller resolution:** `JSONFormatter` now looks up caller information in line with the text formatter, but costs remain higher when caller tracking is enabled.
+- **Caller reporting in a custom formatter:** in async mode the entry is rendered on the worker goroutine, whose stack says nothing about who logged. The logger resolves the call site up front and hands it to formatters implementing `CallerAwareFormatter` (both built-in formatters do). A custom formatter that calls the runtime itself will report the worker instead.
 
 ### Environment Variables
 
