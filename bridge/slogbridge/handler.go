@@ -15,20 +15,26 @@ type Handler struct {
 	groups []string
 }
 
-// NewHandler creates a slog handler backed by the provided simple logger.
+// NewHandler creates a slog handler backed by the provided simple logger. Pass a
+// nil level to follow the logger's own level, so that changing it at runtime --
+// with SetLevel, or the level endpoint in the httplog bridge -- reaches slog
+// callers too. Pass an explicit Leveler to gate slog independently of it.
 func NewHandler(logger *log.Logger, level slog.Leveler) *Handler {
-	if level == nil {
-		level = slog.LevelInfo
-	}
 	return &Handler{logger: logger, level: level, attrs: make([]slog.Attr, 0)}
 }
 
+// Enabled reports whether a record at lvl would be logged. slog consults this
+// before building a record, so a level fixed here is the binding one: when it
+// was pinned at construction, turning the underlying logger down to DEBUG could
+// never make debug records appear.
 func (h *Handler) Enabled(_ context.Context, lvl slog.Level) bool {
-	base := slog.LevelInfo
 	if h.level != nil {
-		base = h.level.Level()
+		return lvl >= h.level.Level()
 	}
-	return lvl >= base
+	if h.logger == nil {
+		return lvl >= slog.LevelInfo
+	}
+	return h.logger.Enabled(levelToLogLevel(lvl))
 }
 
 func (h *Handler) Handle(_ context.Context, record slog.Record) error {
