@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -536,7 +537,14 @@ func truncateString(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
 	}
-	return s[:max] + fmt.Sprintf("...[+%d bytes]", len(s)-max)
+	// Back the cut off to a rune boundary. Slicing mid-rune leaves a partial
+	// UTF-8 sequence, which renders as mojibake in text output and has to be
+	// escaped as a replacement character in JSON.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + fmt.Sprintf("...[+%d bytes]", len(s)-cut)
 }
 
 func truncateFieldValues(fields []Field, max int) []Field {
@@ -1620,7 +1628,7 @@ func (f *JSONFormatter) formatBuffer(level LogLevel, message string, fields []Fi
 	buf.WriteString(`","level":"`)
 	buf.WriteString(logLevelToString(level))
 	buf.WriteString(`","message":`)
-	buf.WriteString(strconv.Quote(message))
+	appendJSONString(buf, message)
 	if f.IncludeCaller {
 		file, line := "", 0
 		if caller != nil {
@@ -1629,7 +1637,7 @@ func (f *JSONFormatter) formatBuffer(level LogLevel, message string, fields []Fi
 			file, line = resolveCaller(0)
 		}
 		buf.WriteString(`,"file":`)
-		buf.WriteString(strconv.Quote(file))
+		appendJSONString(buf, file)
 		buf.WriteString(`,"line":`)
 		buf.WriteString(strconv.Itoa(line))
 	}
@@ -2099,11 +2107,62 @@ func writeFieldValueText(w io.Writer, val interface{}) {
 	}
 }
 
+const hexDigits = "0123456789abcdef"
+
+// appendJSONString writes s as a JSON string, quotes included.
+//
+// strconv.Quote is not usable here: it produces Go literal syntax, so invalid
+// UTF-8 comes out as \xNN and non-printable runes outside the BMP as \U0001d173,
+// neither of which is a JSON escape. A single such byte -- which truncation can
+// manufacture by cutting mid-rune -- makes the whole entry unparseable.
+func appendJSONString(buf *bytes.Buffer, s string) {
+	buf.WriteByte('"')
+	start := 0
+	for i := 0; i < len(s); {
+		if b := s[i]; b < utf8.RuneSelf {
+			if b >= ' ' && b != '"' && b != '\\' {
+				i++
+				continue
+			}
+			buf.WriteString(s[start:i])
+			switch b {
+			case '"':
+				buf.WriteString(`\"`)
+			case '\\':
+				buf.WriteString(`\\`)
+			case '\n':
+				buf.WriteString(`\n`)
+			case '\r':
+				buf.WriteString(`\r`)
+			case '\t':
+				buf.WriteString(`\t`)
+			default:
+				buf.WriteString(`\u00`)
+				buf.WriteByte(hexDigits[b>>4])
+				buf.WriteByte(hexDigits[b&0xF])
+			}
+			i++
+			start = i
+			continue
+		}
+		if r, size := utf8.DecodeRuneInString(s[i:]); r == utf8.RuneError && size == 1 {
+			buf.WriteString(s[start:i])
+			buf.WriteString(`�`)
+			i++
+			start = i
+		} else {
+			i += size
+		}
+	}
+	buf.WriteString(s[start:])
+	buf.WriteByte('"')
+}
+
 func appendJSONFields(buf *bytes.Buffer, fields []Field) {
 	for _, field := range fields {
-		buf.WriteString(`,"`)
-		buf.WriteString(field.Key)
-		buf.WriteString(`":`)
+		buf.WriteByte(',')
+		appendJSONString(buf, field.Key)
+		buf.WriteByte(':')
 		appendJSONValue(buf, field.Value)
 	}
 }
@@ -2112,21 +2171,21 @@ func appendJSONValue(buf *bytes.Buffer, val interface{}) {
 	if encoded, ok := encodeJSONWithRegistry(val); ok {
 		switch v := encoded.(type) {
 		case string:
-			buf.WriteString(strconv.Quote(v))
+			appendJSONString(buf, v)
 		case []byte:
-			buf.WriteString(strconv.Quote(string(v)))
+			appendJSONString(buf, string(v))
 		default:
 			if data, err := json.Marshal(v); err == nil {
 				buf.Write(data)
 			} else {
-				buf.WriteString(strconv.Quote(fmt.Sprint(v)))
+				appendJSONString(buf, fmt.Sprint(v))
 			}
 		}
 		return
 	}
 	switch v := val.(type) {
 	case string:
-		buf.WriteString(strconv.Quote(v))
+		appendJSONString(buf, v)
 		return
 	case int:
 		buf.WriteString(strconv.Itoa(v))
@@ -2154,10 +2213,10 @@ func appendJSONValue(buf *bytes.Buffer, val interface{}) {
 		}
 		return
 	case fmt.Stringer:
-		buf.WriteString(strconv.Quote(v.String()))
+		appendJSONString(buf, v.String())
 		return
 	case error:
-		buf.WriteString(strconv.Quote(v.Error()))
+		appendJSONString(buf, v.Error())
 		return
 	case json.Marshaler:
 		if data, err := v.MarshalJSON(); err == nil {
@@ -2169,7 +2228,7 @@ func appendJSONValue(buf *bytes.Buffer, val interface{}) {
 		buf.Write(data)
 		return
 	}
-	buf.WriteString(strconv.Quote(fmt.Sprint(val)))
+	appendJSONString(buf, fmt.Sprint(val))
 }
 
 func writeValue(b *strings.Builder, val interface{}) {
