@@ -64,7 +64,7 @@ func derivedLoggers() {
 func presets() {
 	dev := log.Must(log.New(log.Development(), log.WithLevel(log.INFO)))
 	defer dev.Close()
-	dev.Info("development: console encoding, colour, call sites")
+	dev.Info("development: console encoding, color, call sites")
 
 	prod := log.Must(log.New(log.Production(), log.WithOutput(os.Stdout)))
 	defer prod.Close()

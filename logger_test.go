@@ -457,7 +457,7 @@ func TestLogger_EncoderOption(t *testing.T) {
 	}
 }
 
-// An unsynchronized logger still writes; it just does not serialise writers.
+// An unsynchronized logger still writes; it just does not serialize writers.
 func TestLogger_Unsynchronized(t *testing.T) {
 	var buf lockedBuffer
 	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithUnsynchronized()))

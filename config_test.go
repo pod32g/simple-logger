@@ -162,7 +162,7 @@ func TestApplyConfigCustomFormatter(t *testing.T) {
 }
 
 // Unsynchronized writes still reach the output; the config field only controls
-// whether the logger serialises them.
+// whether the logger serializes them.
 func TestConfigUnsynchronizedStillWrites(t *testing.T) {
 	var buf lockedBuffer
 	cfg := log.DefaultConfig()

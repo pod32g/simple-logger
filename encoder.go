@@ -43,7 +43,7 @@ func (c Caller) Zero() bool { return c.File == "" }
 // --- text -------------------------------------------------------------------
 
 // TextEncoder renders "2006-01-02 15:04:05 - [INFO] message key=value", the
-// default. Colorize adds ANSI colour to the level; TimeLayout overrides the
+// default. Colorize adds ANSI color to the level; TimeLayout overrides the
 // timestamp format.
 type TextEncoder struct {
 	Colorize   bool
@@ -109,7 +109,7 @@ func (e *JSONEncoder) Encode(buf []byte, entry Entry) []byte {
 // --- console ----------------------------------------------------------------
 
 // ConsoleEncoder renders human-friendly output for a terminal: a dimmed
-// timestamp, a padded and coloured level, then aligned key=value pairs.
+// timestamp, a padded and colored level, then aligned key=value pairs.
 type ConsoleEncoder struct {
 	TimeLayout string
 	NoColor    bool

@@ -6,11 +6,90 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+A release about the public API. Every capability from 0.7.1 is still here; the
+surface reaching it is much smaller, and several long-standing gaps are closed.
+
+### Changed — the API
+
+- **One constructor.** `New(opts ...Option) (*Logger, error)`, with `Must` for
+  package-level use, replaces `NewLogger`, `ApplyConfig` and `ConfigureLogger`.
+  An invalid configuration is now an error rather than a silent fallback to a
+  logger you did not ask for. `Development()` and `Production()` are presets.
+- **Three ways to log per level, not six.** `Info(msg, fields...)`,
+  `Infof(format, args...)` and `InfoContext(ctx, msg, fields...)`. The `*String`
+  and `*1` variants existed only to avoid allocations, which made an
+  implementation detail into the caller's first decision; `Info("msg")` now
+  costs what `InfoString` cost.
+- **Options instead of setters.** Fifteen `Set*` mutators become options.
+  `SetLevel`, `SetOutput`, `SetOutputWithCloser` and `AddHook` remain, because
+  changing those at runtime is a real use.
+- **One encoder interface.** `Encoder` with a single `Encode(buf, Entry) []byte`
+  replaces eight formatter interfaces whose real contract was an undocumented
+  chain of type assertions. `DefaultFormatter`, `JSONFormatter` and
+  `ConsoleFormatter` become `TextEncoder`, `JSONEncoder` and `ConsoleEncoder`.
+- **Config.** A typed `Format`, no more `Output`/`Filepath` overlap, no more
+  stringly-typed `"custom"` discriminator (supply an `Encoder`), and
+  `SyncWrites`/`Compress` inverted to `Unsynchronized`/`NoCompress` so defaults
+  are the zero value. Numeric levels are rejected in favour of names.
+- **Reload.** Six package symbols become `logger.Watch` and `logger.ReloadFrom`.
+- **Async mechanics are internal**, reached through `WithAsync*` options.
+- `Error(key, err)` becomes `Err(key, err)`, freeing `log.Error` for the
+  package-level logging functions every comparable library has.
+- Removed `FieldEncoder` (referenced nowhere), `CustomFormatter` (identical to
+  `Formatter`) and `StructuredArgsFormatter` (declared, documented, and never
+  dispatched — implementing it did nothing).
+
+### Added
+
+- `TRACE` and `PANIC` levels, threaded through parsing, colors, and the slog
+  and OTLP mappings.
+- `Group` for nested fields and `Lazy` for values computed only when the entry
+  survives.
+- Field constructors: `Duration`, `Time`, `Stringer`, `Binary`, `Uint64`,
+  `Int32`, `Uint32`, `Float32`, plus `Logger.WithError`.
+- `WithCallerSkip`, so a wrapper reports its callers rather than itself.
+- `Logger.Writer` and `WriterLevel`, turning line-oriented output from other
+  libraries into entries — including `http.Server.ErrorLog`.
+- Package `logtest`: an in-memory observer with chainable filters, so tests
+  assert on entries instead of parsing output.
+- Module `bridge/grpclog`: unary and stream interceptors, previously only
+  example code. It is a separate module, so gRPC stays out of your graph.
+- `Logger.Log` with `EntryTime` and `EntryCaller`, for bridges carrying a
+  record's own timestamp and call site.
+
+### Fixed
+
+- **The slog bridge now passes `testing/slogtest`.** It previously failed 28
+  checks: groups were flattened into dotted keys and duplicated across repeated
+  `WithGroup`/`WithAttrs` pairs, `Record.Time` and `Record.PC` were discarded,
+  empty attributes were emitted, and empty groups were not omitted. The suite
+  now runs as part of the bridge's tests. One documented deviation remains: this
+  logger always stamps a time.
+
+### Performance
+
+Allocations on the logging path fall from 7 per entry to 2, and time from
+185ns to 119ns, measured on one machine across the same benchmark. The library
+now sits between zerolog and zap:
+
+| | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| zerolog | 46.8 | 0 | 0 |
+| simple-logger | 118.6 | 40 | 2 |
+| zap | 163.6 | 64 | 1 |
+| logrus | 914.3 | 1258 | 22 |
+
+The win comes from the encoder contract: the logger owns one pooled buffer per
+entry and the encoder appends into it, which removed the per-entry writer
+wrapper, the closures, the `io.WriteString` conversions and the escaping frame
+buffer.
+
+
 ## [0.7.1] - 2026-07-31
 
 This release is mostly corrective: thirteen defects found in a review of 0.7.0,
 plus the dependency and toolchain work that followed. It also carries a handful
-of API additions and several behaviour changes, so read *Changed* before
+of API additions and several behavior changes, so read *Changed* before
 upgrading — in particular the OTLP hook now has to be closed.
 
 ### Added
@@ -37,7 +116,7 @@ upgrading — in particular the OTLP hook now has to be closed.
   batches (512 records or 1s) with a 10s per-export deadline, instead of one
   synchronous, unbounded gRPC round trip per entry on the logging goroutine.
   Close (or flush) the hook before exit, or use `WithSynchronousExport` to keep
-  the previous behaviour.
+  the previous behavior.
 - Text output quotes values containing control characters, so an automatic
   stacktrace field now renders as a single quoted line.
 - Unsynchronized writes take a read lock. They still proceed concurrently, but a

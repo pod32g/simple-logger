@@ -47,7 +47,7 @@ func TestSlogHandlerConformance(t *testing.T) {
 	}
 
 	// One documented deviation: this logger always stamps an entry with a time,
-	// so a record carrying none still comes out with one. Honouring "ignore a
+	// so a record carrying none still comes out with one. Honoring "ignore a
 	// zero Record.Time" would mean teaching the encoders to omit timestamps,
 	// which is wrong for every other caller. Every other check must pass.
 	for _, line := range strings.Split(err.Error(), "\n") {

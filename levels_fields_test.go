@@ -34,7 +34,7 @@ func TestTraceLevel(t *testing.T) {
 func TestLevelOrdering(t *testing.T) {
 	ordered := []log.LogLevel{log.TRACE, log.DEBUG, log.INFO, log.WARN, log.ERROR, log.PANIC, log.FATAL}
 	for i := 1; i < len(ordered); i++ {
-		if !(ordered[i-1] < ordered[i]) {
+		if ordered[i-1] >= ordered[i] {
 			t.Errorf("%v should sort below %v", ordered[i-1], ordered[i])
 		}
 	}
@@ -131,7 +131,7 @@ func TestFieldConstructors(t *testing.T) {
 		}
 		if key == "big" {
 			// JSON numbers lose precision at this size; compare textually.
-			if s := string(buf.Bytes()); !strings.Contains(s, `"big":18446744073709551615`) {
+			if s := buf.String(); !strings.Contains(s, `"big":18446744073709551615`) {
 				t.Errorf("uint64 lost precision: %s", s)
 			}
 			continue

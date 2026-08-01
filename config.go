@@ -37,7 +37,7 @@ type Config struct {
 	Rotation          Rotation `json:"rotation"`
 
 	// Encoder overrides Format with an encoder supplied in code. It has no
-	// serialised form, which is why an unknown Format is an error rather than a
+	// serialized form, which is why an unknown Format is an error rather than a
 	// silent fallback: a config file cannot name an encoder that exists only in
 	// the program.
 	Encoder Encoder `json:"-"`
@@ -157,7 +157,7 @@ func LoadConfigFromEnv() Config {
 		config.TimeFormat = timeFormat
 	}
 	// LOG_SYNC_WRITES reads the other way round, so that the default
-	// (synchronised) stays the zero value of the field.
+	// (synchronized) stays the zero value of the field.
 	if sync := os.Getenv("LOG_SYNC_WRITES"); sync != "" {
 		if parsed, err := strconv.ParseBool(sync); err == nil {
 			config.Unsynchronized = !parsed
@@ -207,7 +207,7 @@ func LoadConfigFromFile(filePath string) (Config, error) {
 }
 
 // parseLogLevel converts a level name to a LogLevel, falling back to INFO for
-// anything unrecognised.
+// anything unrecognized.
 func parseLogLevel(level string) LogLevel {
 	lvl, _ := ParseLevel(level)
 	return lvl

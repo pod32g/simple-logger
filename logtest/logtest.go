@@ -82,7 +82,7 @@ func Attach(logger *log.Logger) *Observer {
 }
 
 // Fire implements log.Hook. Hooks see entries after redaction and field
-// normalisation, which is what a test wants to assert on.
+// normalization, which is what a test wants to assert on.
 func (o *Observer) Fire(level log.LogLevel, message string, fields []log.Field) {
 	cloned := make([]log.Field, len(fields))
 	copy(cloned, fields)

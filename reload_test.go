@@ -34,7 +34,7 @@ func TestWatchReloadsOnChange(t *testing.T) {
 			t.Fatalf("watch returned %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("watch did not return after the context was cancelled")
+		t.Fatal("watch did not return after the context was canceled")
 	}
 }
 

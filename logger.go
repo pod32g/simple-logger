@@ -1,7 +1,6 @@
 package log
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -20,22 +19,10 @@ import (
 )
 
 var (
-	builderPool = sync.Pool{
-		New: func() interface{} {
-			return new(strings.Builder)
-		},
-	}
-
 	encodeBufPool = sync.Pool{
 		New: func() interface{} {
 			b := make([]byte, 0, 512)
 			return &b
-		},
-	}
-
-	bufferPool = sync.Pool{
-		New: func() interface{} {
-			return new(bytes.Buffer)
 		},
 	}
 )
@@ -452,21 +439,6 @@ type MessageRedactor interface {
 
 type redactorHolder struct{ r Redactor }
 type errHandlerHolder struct{ fn func(error) }
-
-// errCapturingWriter remembers the first error returned by the underlying
-// writer so the logging path can report a failed sink write.
-type errCapturingWriter struct {
-	w   io.Writer
-	err error
-}
-
-func (e *errCapturingWriter) Write(p []byte) (int, error) {
-	n, err := e.w.Write(p)
-	if err != nil && e.err == nil {
-		e.err = err
-	}
-	return n, err
-}
 
 // redactedPlaceholder is substituted for redacted field values.
 const redactedPlaceholder = "[REDACTED]"
@@ -1038,68 +1010,9 @@ func (l *Logger) setEncoder(enc Encoder) {
 	}
 }
 
-// setContextExtractor configures how context.Context values are converted into fields.
-func (l *Logger) setContextExtractor(fn ContextExtractorFunc) {
-	if fn == nil {
-		l.extractor.Store((*extractorHolder)(nil))
-		return
-	}
-	l.extractor.Store(&extractorHolder{fn: fn})
-}
-
-// setSampler installs a sampler that can drop log entries before formatting.
-func (l *Logger) setSampler(fn Sampler) {
-	if fn == nil {
-		l.sampler.Store((*samplerHolder)(nil))
-		return
-	}
-	l.sampler.Store(&samplerHolder{fn: fn})
-}
-
 // setIncludeStacktrace toggles automatic stacktrace capture for error/fatal logs.
 func (l *Logger) setIncludeStacktrace(enabled bool) {
 	l.includeStacktrace.Store(enabled)
-}
-
-// setRedactor installs a Redactor that masks fields (and, if it implements
-// MessageRedactor, the message) before formatting and hook dispatch. Pass nil
-// to remove it. See NewKeyRedactor and NewPatternScrubber.
-func (l *Logger) setRedactor(r Redactor) {
-	if r == nil {
-		l.redactor.Store((*redactorHolder)(nil))
-		return
-	}
-	l.redactor.Store(&redactorHolder{r: r})
-}
-
-// setDeduplicateFields enables last-wins de-duplication of fields sharing a key
-// (e.g. a context field overridden at the call site) before rendering. It adds
-// a small per-entry cost, so it is off by default.
-func (l *Logger) setDeduplicateFields(enabled bool) {
-	l.dedupeFields.Store(enabled)
-}
-
-// setMaxFieldBytes caps the length of string field values; longer values are
-// truncated with a "...[+N bytes]" marker. Zero (the default) means unlimited.
-func (l *Logger) setMaxFieldBytes(n int) {
-	l.maxFieldBytes.Store(int64(n))
-}
-
-// setMaxMessageBytes caps the length of the rendered message; longer messages
-// are truncated with a "...[+N bytes]" marker. Zero (the default) means unlimited.
-func (l *Logger) setMaxMessageBytes(n int) {
-	l.maxMessageBytes.Store(int64(n))
-}
-
-// setErrorHandler registers a callback invoked when a write to the output sink
-// returns an error. Without one, sink write failures are counted (WriteErrors)
-// but otherwise silent. Pass nil to remove it.
-func (l *Logger) setErrorHandler(fn func(error)) {
-	if fn == nil {
-		l.errHandler.Store((*errHandlerHolder)(nil))
-		return
-	}
-	l.errHandler.Store(&errHandlerHolder{fn: fn})
 }
 
 // WriteErrors returns the number of sink write errors observed so far.
@@ -1110,33 +1023,6 @@ func (l *Logger) WriteErrors() int64 {
 type levelOutput struct {
 	min LogLevel
 	w   io.Writer
-}
-
-// addLevelOutput registers an additional writer that receives the same formatted
-// entries as the primary output, but only for entries at or above minLevel. For
-// example, addLevelOutput(ERROR, alertSink) mirrors errors and fatals to an
-// alerting sink while the primary output keeps everything. Outputs added here are
-// not closed by Close; manage their lifecycle yourself.
-func (l *Logger) addLevelOutput(minLevel LogLevel, w io.Writer) {
-	if w == nil {
-		return
-	}
-	for {
-		cur := l.levelOutputs.Load()
-		var next []levelOutput
-		if cur != nil {
-			next = append(next, *cur...)
-		}
-		next = append(next, levelOutput{min: minLevel, w: w})
-		if l.levelOutputs.CompareAndSwap(cur, &next) {
-			return
-		}
-	}
-}
-
-// clearLevelOutputs removes all writers registered with addLevelOutput.
-func (l *Logger) clearLevelOutputs() {
-	l.levelOutputs.Store(nil)
 }
 
 // normalizeFields applies redaction, de-duplication, and value truncation. It
@@ -1448,13 +1334,6 @@ func (l *Logger) AddHook(h Hook, opts ...HookOption) {
 	l.hooksMu.Unlock()
 }
 
-// clearHooks removes all registered hooks.
-func (l *Logger) clearHooks() {
-	l.hooksMu.Lock()
-	l.hooks = nil
-	l.hooksMu.Unlock()
-}
-
 // setSynchronized toggles serialized writes. When disabled, callers must ensure the
 // writer they provide is safe for concurrent use.
 func (l *Logger) setSynchronized(enabled bool) {
@@ -1751,7 +1630,7 @@ func (l *Logger) finishTerminal(level LogLevel, message string) {
 	}
 }
 
-// now returns the entry timestamp, honouring a clock installed for tests.
+// now returns the entry timestamp, honoring a clock installed for tests.
 func (l *Logger) now() time.Time {
 	if h := l.clock.Load(); h != nil && h.fn != nil {
 		return h.fn()

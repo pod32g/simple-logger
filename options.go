@@ -244,7 +244,7 @@ func WithJSON() Option {
 	}
 }
 
-// WithConsole encodes entries for a terminal: dimmed timestamps, coloured
+// WithConsole encodes entries for a terminal: dimmed timestamps, colored
 // levels, aligned fields.
 func WithConsole() Option {
 	return func(b *builder) error {
@@ -264,7 +264,7 @@ func WithEncoder(f Encoder) Option {
 	}
 }
 
-// WithColor enables ANSI colour in the text and console encoders.
+// WithColor enables ANSI color in the text and console encoders.
 func WithColor() Option {
 	return func(b *builder) error {
 		b.colorize = true
@@ -334,7 +334,7 @@ func WithStacktrace() Option {
 	}
 }
 
-// --- behaviour --------------------------------------------------------------
+// --- behavior --------------------------------------------------------------
 
 // WithSampler installs a sampler that drops entries before they are formatted.
 func WithSampler(s Sampler) Option {
@@ -405,7 +405,7 @@ func WithMaxMessageBytes(n int) Option {
 	}
 }
 
-// WithUnsynchronized stops the logger serialising writes. The writer must then
+// WithUnsynchronized stops the logger serializing writes. The writer must then
 // be safe for concurrent use; in exchange, concurrent writes do not queue behind
 // one another.
 func WithUnsynchronized() Option {
@@ -470,7 +470,7 @@ func WithAsyncBlocking() Option {
 // --- presets ----------------------------------------------------------------
 
 // Development configures a logger for a terminal: console encoding at DEBUG,
-// with colour, call sites and stacktraces. Compose it with other options, which
+// with color, call sites and stacktraces. Compose it with other options, which
 // take effect if they come after it.
 //
 //	logger, err := log.New(log.Development(), log.WithLevel(log.INFO))
