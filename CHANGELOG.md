@@ -5,20 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
-### Security
-- Updated dependencies to clear known vulnerabilities: `google.golang.org/grpc`
-  to 1.82.1 (xDS RBAC and HTTP/2 issues, high), `golang.org/x/net` to 0.56.0
-  (HTML parser DoS, plus a later advisory that affects 0.55.0), `golang.org/x/text`
-  to 0.39.0 and `go.opentelemetry.io/otel` to 1.44.0. None were reachable from
-  this module; `govulncheck` reports no vulnerabilities.
 
-### Changed
-- **The minimum Go version is now 1.25**, required by `go.opentelemetry.io/otel`,
-  which moved to `go 1.25.0` at v1.42.0 and is needed at 1.44.0 for a security fix.
-- **`google.golang.org/grpc` is no longer a dependency of this module.** It was
-  only ever imported by `example/grpc_interceptor`, which now has its own
-  `go.mod`, so importing simple-logger no longer pulls grpc (and `golang.org/x/net`,
-  `golang.org/x/text` and `genproto` with it) into your module graph.
+## [0.7.1] - 2026-07-31
+
+This release is mostly corrective: thirteen defects found in a review of 0.7.0,
+plus the dependency and toolchain work that followed. It also carries a handful
+of API additions and several behaviour changes, so read *Changed* before
+upgrading — in particular the OTLP hook now has to be closed.
 
 ### Added
 - `Debugf`/`Infof`/`Warnf`/`Errorf`/`Fatalf` printf-style methods. They check the
@@ -32,6 +25,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and `Queued`.
 - `LogLevel` implements `json.Marshaler`/`json.Unmarshaler`, so JSON configs can
   name the level (`{"level":"debug"}`) as every other entry point already did.
+
+### Changed
+- **The minimum Go version is now 1.25**, required by `go.opentelemetry.io/otel`,
+  which moved to `go 1.25.0` at v1.42.0 and is needed at 1.44.0 for a security fix.
+- **`google.golang.org/grpc` is no longer a dependency of this module.** It was
+  only ever imported by `example/grpc_interceptor`, which now has its own
+  `go.mod`, so importing simple-logger no longer pulls grpc (and `golang.org/x/net`,
+  `golang.org/x/text` and `genproto` with it) into your module graph.
+- **The OTLP hook batches by default.** Records are queued and exported in
+  batches (512 records or 1s) with a 10s per-export deadline, instead of one
+  synchronous, unbounded gRPC round trip per entry on the logging goroutine.
+  Close (or flush) the hook before exit, or use `WithSynchronousExport` to keep
+  the previous behaviour.
+- Text output quotes values containing control characters, so an automatic
+  stacktrace field now renders as a single quoted line.
+- Unsynchronized writes take a read lock. They still proceed concurrently, but a
+  writer swap or `Close` now waits for them instead of closing underneath them.
 
 ### Fixed
 - `Flush()` could block forever: under `DropOldest` a producer freeing a queue
@@ -65,16 +75,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the `httplog` level endpoint) could never turn slog output back up. A nil
   `Leveler` now follows the logger.
 
-### Changed
-- **The OTLP hook batches by default.** Records are queued and exported in
-  batches (512 records or 1s) with a 10s per-export deadline, instead of one
-  synchronous, unbounded gRPC round trip per entry on the logging goroutine.
-  Close (or flush) the hook before exit, or use `WithSynchronousExport` to keep
-  the previous behaviour.
-- Text output quotes values containing control characters, so an automatic
-  stacktrace field now renders as a single quoted line.
-- Unsynchronized writes take a read lock. They still proceed concurrently, but a
-  writer swap or `Close` now waits for them instead of closing underneath them.
+### Security
+- Updated dependencies to clear known vulnerabilities: `google.golang.org/grpc`
+  to 1.82.1 (xDS RBAC and HTTP/2 issues, high), `golang.org/x/net` to 0.56.0
+  (HTML parser DoS, plus a later advisory that affects 0.55.0), `golang.org/x/text`
+  to 0.39.0 and `go.opentelemetry.io/otel` to 1.44.0. None were reachable from
+  this module; `govulncheck` reports no vulnerabilities.
 
 ## [0.7.0] - 2026-06-21
 ### Added
