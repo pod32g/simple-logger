@@ -264,7 +264,7 @@ func TestLogger_JsonLogMessage(t *testing.T) {
 // TestLogger_CustomFormatter verifies that the logger correctly logs messages using a custom formatter
 func TestLogger_CustomFormatter(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithEncoder(&MyCustomFormatter{})))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithEncoder(&MyCustomEncoder{})))
 
 	logger.Info("Custom Info message")
 
@@ -450,7 +450,7 @@ func TestLogger_AsyncFlushInterval(t *testing.T) {
 // TestLogger_EncoderOption verifies that WithEncoder selects the encoding.
 func TestLogger_EncoderOption(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithEncoder(&log.JSONFormatter{})))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithEncoder(&log.JSONEncoder{})))
 	logger.Info("json msg")
 	if !isValidJSON(buf.String()) {
 		t.Errorf("expected JSON formatted message, got %v", buf.String())
@@ -560,11 +560,11 @@ func TestLoggerLoadConfigFromEnv(t *testing.T) {
 	}
 }
 
-// MyCustomFormatter is a test custom formatter
-type MyCustomFormatter struct{}
+// MyCustomEncoder is a test encoder.
+type MyCustomEncoder struct{}
 
-func (f *MyCustomFormatter) Format(level log.LogLevel, message string) string {
-	return fmt.Sprintf("**CUSTOM LOG** [%s] %s\n", logLevelToString(level), message)
+func (f *MyCustomEncoder) Encode(buf []byte, e log.Entry) []byte {
+	return fmt.Appendf(buf, "**CUSTOM LOG** [%s] %s\n", e.Level, e.Message)
 }
 
 // Helper function to check if the output contains the expected log message

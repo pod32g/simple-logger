@@ -4,23 +4,28 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	log "github.com/pod32g/simple-logger"
 )
 
-func FuzzJSONFormatterFormat(f *testing.F) {
+func FuzzJSONEncoder(f *testing.F) {
 	f.Add("hello", "blob", []byte("world"))
 	f.Add("", "", []byte{})
 	f.Add("m", `ke"y`, []byte("a\xffb"))
 	f.Add("line\nbreak", "k", []byte("\U0001D173"))
 
 	f.Fuzz(func(t *testing.T, msg, key string, blob []byte) {
-		formatter := &log.JSONFormatter{}
+		encoder := &log.JSONEncoder{}
+		encoded := encoder.Encode(nil, log.Entry{
+			Level:   log.INFO,
+			Message: msg,
+			Fields:  []log.Field{log.String(key, string(blob))},
+			Time:    time.Unix(0, 0).UTC(),
+		})
 		var buf bytes.Buffer
-		formatter.FormatWithFieldsTo(log.INFO, msg, []log.Field{
-			log.String(key, string(blob)),
-		}, &buf)
+		buf.Write(encoded)
 
 		// The point of a JSON encoder: whatever the bytes, the result parses.
 		var out map[string]interface{}
@@ -39,8 +44,9 @@ func FuzzJSONFormatterFormat(f *testing.F) {
 			}
 		}
 
-		if s := formatter.FormatWithFields(log.ERROR, msg, nil); !json.Valid([]byte(s)) {
-			t.Fatalf("invalid JSON from FormatWithFields: %q", s)
+		plain := encoder.Encode(nil, log.Entry{Level: log.ERROR, Message: msg, Time: time.Unix(0, 0).UTC()})
+		if !json.Valid(plain) {
+			t.Fatalf("invalid JSON without fields: %q", plain)
 		}
 	})
 }

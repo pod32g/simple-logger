@@ -134,8 +134,8 @@ func rotation() {
 // An encoder is one interface with one method.
 type bracketEncoder struct{}
 
-func (bracketEncoder) Format(level log.LogLevel, message string) string {
-	return fmt.Sprintf("<%s> %s\n", level, message)
+func (bracketEncoder) Encode(buf []byte, e log.Entry) []byte {
+	return fmt.Appendf(buf, "<%s> %s\n", e.Level, e.Message)
 }
 
 func customEncoder() {

@@ -20,7 +20,7 @@ type builder struct {
 	level   LogLevel
 	output  io.Writer
 	closer  io.Closer
-	encoder Formatter
+	encoder Encoder
 
 	caller     bool
 	callerSkip int
@@ -95,18 +95,17 @@ func Must(l *Logger, err error) *Logger {
 
 func (b *builder) build() *Logger {
 	if b.encoder == nil {
-		b.encoder = &DefaultFormatter{
-			IncludeCaller: b.caller,
-			Colorize:      b.colorize,
-			TimeLayout:    b.timeLayout,
-			Now:           b.clock,
-		}
+		b.encoder = &TextEncoder{Colorize: b.colorize, TimeLayout: b.timeLayout}
 	}
 
 	l := &Logger{loggerCore: &loggerCore{}}
 	l.level.Store(int32(b.level))
 	l.output.Store(&writerHolder{w: b.output})
-	l.formatter.Store(&formatterHolder{f: b.encoder})
+	l.encoder.Store(&encoderHolder{e: b.encoder})
+	l.wantCaller.Store(b.caller)
+	if b.clock != nil {
+		l.clock.Store(&clockHolder{fn: b.clock})
+	}
 	l.syncWrites.Store(!b.unsynchronized)
 	l.extractor.Store(&extractorHolder{fn: b.extractor})
 	l.sampler.Store((*samplerHolder)(nil))
@@ -240,7 +239,7 @@ func WithLevel(level LogLevel) Option {
 // WithJSON encodes entries as JSON, the usual choice for machine ingestion.
 func WithJSON() Option {
 	return func(b *builder) error {
-		b.encoder = &JSONFormatter{IncludeCaller: b.caller, TimeLayout: b.timeLayout, Now: b.clock}
+		b.encoder = &JSONEncoder{TimeLayout: b.timeLayout}
 		return nil
 	}
 }
@@ -249,13 +248,13 @@ func WithJSON() Option {
 // levels, aligned fields.
 func WithConsole() Option {
 	return func(b *builder) error {
-		b.encoder = &ConsoleFormatter{TimeLayout: b.timeLayout, NoColor: !b.colorize, Now: b.clock}
+		b.encoder = &ConsoleEncoder{TimeLayout: b.timeLayout, NoColor: !b.colorize}
 		return nil
 	}
 }
 
 // WithEncoder installs a custom encoder.
-func WithEncoder(f Formatter) Option {
+func WithEncoder(f Encoder) Option {
 	return func(b *builder) error {
 		if f == nil {
 			return fmt.Errorf("logger: encoder cannot be nil")
@@ -294,12 +293,12 @@ func WithClock(now func() time.Time) Option {
 // option order does not matter for the built-in encoders.
 func retrofit(b *builder) error {
 	switch f := b.encoder.(type) {
-	case *DefaultFormatter:
-		f.Colorize, f.TimeLayout, f.Now = b.colorize, b.timeLayout, b.clock
-	case *JSONFormatter:
-		f.TimeLayout, f.Now = b.timeLayout, b.clock
-	case *ConsoleFormatter:
-		f.TimeLayout, f.NoColor, f.Now = b.timeLayout, !b.colorize, b.clock
+	case *TextEncoder:
+		f.Colorize, f.TimeLayout = b.colorize, b.timeLayout
+	case *JSONEncoder:
+		f.TimeLayout = b.timeLayout
+	case *ConsoleEncoder:
+		f.TimeLayout, f.NoColor = b.timeLayout, !b.colorize
 	}
 	return nil
 }
@@ -310,12 +309,6 @@ func retrofit(b *builder) error {
 func WithCaller() Option {
 	return func(b *builder) error {
 		b.caller = true
-		switch f := b.encoder.(type) {
-		case *DefaultFormatter:
-			f.IncludeCaller = true
-		case *JSONFormatter:
-			f.IncludeCaller = true
-		}
 		return nil
 	}
 }
@@ -487,7 +480,7 @@ func Development() Option {
 		b.colorize = true
 		b.caller = true
 		b.stacktrace = true
-		b.encoder = &ConsoleFormatter{TimeLayout: b.timeLayout, NoColor: false, Now: b.clock}
+		b.encoder = &ConsoleEncoder{TimeLayout: b.timeLayout, NoColor: false}
 		return nil
 	}
 }
@@ -502,7 +495,7 @@ func Production() Option {
 		b.level = INFO
 		b.caller = true
 		b.stacktrace = true
-		b.encoder = &JSONFormatter{IncludeCaller: true, TimeLayout: b.timeLayout, Now: b.clock}
+		b.encoder = &JSONEncoder{TimeLayout: b.timeLayout}
 		b.async = true
 		b.asyncOpts.queueSize = 4096
 		b.asyncOpts.batchSize = 64

@@ -12,21 +12,17 @@ import (
 )
 
 // logfmtEncoder renders entries in the logfmt style used by Heroku and friends.
+// One interface, one method: append to buf, return the extended slice.
 type logfmtEncoder struct{}
 
-func (logfmtEncoder) Format(level log.LogLevel, message string) string {
-	return logfmtEncoder{}.FormatWithFields(level, message, nil)
-}
-
-func (logfmtEncoder) FormatWithFields(level log.LogLevel, message string, fields []log.Field) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "ts=%s level=%s msg=%q",
-		time.Now().Format(time.RFC3339), strings.ToLower(level.String()), message)
-	for _, f := range fields {
-		fmt.Fprintf(&b, " %s=%v", f.Key, f.Value)
+func (logfmtEncoder) Encode(buf []byte, e log.Entry) []byte {
+	buf = append(buf, "ts="...)
+	buf = e.Time.AppendFormat(buf, time.RFC3339)
+	buf = fmt.Appendf(buf, " level=%s msg=%q", strings.ToLower(e.Level.String()), e.Message)
+	for _, f := range e.Fields {
+		buf = fmt.Appendf(buf, " %s=%v", f.Key, f.Value)
 	}
-	b.WriteByte('\n')
-	return b.String()
+	return append(buf, '\n')
 }
 
 func main() {

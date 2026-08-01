@@ -40,7 +40,7 @@ type Config struct {
 	// serialised form, which is why an unknown Format is an error rather than a
 	// silent fallback: a config file cannot name an encoder that exists only in
 	// the program.
-	Encoder Formatter `json:"-"`
+	Encoder Encoder `json:"-"`
 }
 
 // DefaultConfig returns the configuration used when nothing else is specified.
@@ -125,8 +125,8 @@ func (l *Logger) Apply(cfg Config) error {
 	}
 
 	l.SetLevel(cfg.Level)
-	if fh := probe.formatter.Load(); fh != nil {
-		l.setFormatter(fh.f)
+	if eh := probe.encoder.Load(); eh != nil {
+		l.setEncoder(eh.e)
 	}
 	l.setIncludeStacktrace(cfg.IncludeStacktrace)
 	l.setSynchronized(!cfg.Unsynchronized)

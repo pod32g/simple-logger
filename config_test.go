@@ -179,8 +179,8 @@ func TestConfigUnsynchronizedStillWrites(t *testing.T) {
 
 type testFormatter struct{}
 
-func (testFormatter) Format(level log.LogLevel, message string) string {
-	return "CUSTOM(" + logLevelToString(level) + ") " + message + "\n"
+func (testFormatter) Encode(buf []byte, e log.Entry) []byte {
+	return append(buf, "CUSTOM("+e.Level.String()+") "+e.Message+"\n"...)
 }
 
 func TestApplyConfigFileOutput(t *testing.T) {

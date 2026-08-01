@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +23,13 @@ var (
 	builderPool = sync.Pool{
 		New: func() interface{} {
 			return new(strings.Builder)
+		},
+	}
+
+	encodeBufPool = sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, 0, 512)
+			return &b
 		},
 	}
 
@@ -254,16 +260,6 @@ func (f HookFunc) Fire(level LogLevel, message string, fields []Field) {
 	f(level, message, fields)
 }
 
-// StructuredFormatter allows formatters to customize field rendering.
-type StructuredFormatter interface {
-	FormatWithFields(level LogLevel, message string, fields []Field) string
-}
-
-// StructuredWriterFormatter allows direct writer formatting with fields.
-type StructuredWriterFormatter interface {
-	FormatWithFieldsTo(level LogLevel, message string, fields []Field, w io.Writer)
-}
-
 type contextFieldsKey struct{}
 
 // Sampler decides whether a log entry at the given level should be emitted.
@@ -400,27 +396,6 @@ type logRequest struct {
 	fields  []Field
 	caller  *Caller       // call site resolved by the producer, nil to resolve at format time
 	flush   chan struct{} // non-nil marks a Flush barrier rather than an entry
-}
-
-// Caller is a resolved source location.
-type Caller struct {
-	File string
-	Line int
-}
-
-// CallerAwareFormatter is an optional Formatter extension for formatters that
-// render caller information. The logger resolves the call site on the goroutine
-// that logged (it has to: an async entry is formatted on the worker, whose stack
-// says nothing about who logged) and passes it here instead of letting the
-// formatter walk an unrelated stack. Formatters that do not implement it still
-// work; they just resolve their own caller, which is only meaningful in
-// synchronous mode.
-type CallerAwareFormatter interface {
-	// IncludeCallerInfo reports whether the formatter renders the call site, so
-	// the logger can skip resolving one that would be thrown away.
-	IncludeCallerInfo() bool
-	// FormatWithCallerTo renders an entry using the supplied call site.
-	FormatWithCallerTo(level LogLevel, message string, fields []Field, caller Caller, w io.Writer)
 }
 
 // Redactor transforms fields before they are formatted or dispatched to hooks,
@@ -739,23 +714,17 @@ func (l *LogLevel) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Formatter defines an interface for formatting log messages
-type Formatter interface {
-	Format(level LogLevel, message string) string
-}
-
-// WriterFormatter allows writing formatted output directly to an io.Writer
-type WriterFormatter interface {
-	FormatTo(level LogLevel, message string, w io.Writer)
-}
-
 // Logger represents a logging instance
 type writerHolder struct {
 	w io.Writer
 }
 
-type formatterHolder struct {
-	f Formatter
+type encoderHolder struct {
+	e Encoder
+}
+
+type clockHolder struct {
+	fn func() time.Time
 }
 
 type extractorHolder struct {
@@ -779,12 +748,14 @@ type Logger struct {
 // copied) by every logger derived via With, so a single SetOutput/SetLevel/etc.
 // is observed by the whole family of derived loggers.
 type loggerCore struct {
-	level     atomic.Int32
-	output    atomic.Pointer[writerHolder]
-	formatter atomic.Pointer[formatterHolder]
-	sampler   atomic.Pointer[samplerHolder]
-	hooksMu   sync.RWMutex
-	hooks     []hookRegistration
+	level      atomic.Int32
+	output     atomic.Pointer[writerHolder]
+	encoder    atomic.Pointer[encoderHolder]
+	clock      atomic.Pointer[clockHolder]
+	wantCaller atomic.Bool
+	sampler    atomic.Pointer[samplerHolder]
+	hooksMu    sync.RWMutex
+	hooks      []hookRegistration
 	// writeMu guards the output. Synchronized writes take it exclusively;
 	// unsynchronized writes take it for reading, which still lets them run
 	// concurrently with each other but lets a writer swap or a Close wait for
@@ -1007,13 +978,13 @@ func (l *Logger) RecoverAndContinue() {
 	}
 }
 
-// setFormatter allows changing the log message format. It panics if formatter
-// is nil.
-func (l *Logger) setFormatter(formatter Formatter) {
-	if formatter == nil {
-		panic("logger: formatter cannot be nil")
+// setEncoder replaces the encoder. A nil encoder is ignored rather than
+// panicking: this is reached from config reload, where a bad configuration
+// should not take the process down.
+func (l *Logger) setEncoder(enc Encoder) {
+	if enc != nil {
+		l.encoder.Store(&encoderHolder{e: enc})
 	}
-	l.formatter.Store(&formatterHolder{f: formatter})
 }
 
 // setContextExtractor configures how context.Context values are converted into fields.
@@ -1432,6 +1403,8 @@ func (l *Logger) mergeContextFields(ctx context.Context, fields []Field) []Field
 	return combined
 }
 
+const hexDigits = "0123456789abcdef"
+
 var levelStrings = [...]string{"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "PANIC", "FATAL"}
 var levelBytes = [...][]byte{
 	[]byte("TRACE"),
@@ -1455,6 +1428,8 @@ var levelColors = map[LogLevel]string{
 
 const colorReset = "\033[0m"
 
+const dimColor = "\033[2m"
+
 const packagePrefix = "github.com/pod32g/simple-logger."
 
 type callerEntry struct {
@@ -1477,57 +1452,6 @@ func logLevelToString(level LogLevel) string {
 	return "UNKNOWN"
 }
 
-// DefaultFormatter is a simple text-based log message formatter
-// DefaultFormatter is a simple text-based log message formatter.
-// The IncludeCaller flag controls whether file and line information
-// is added to each log entry. Including caller information is
-// convenient for debugging but adds overhead, so it can be disabled
-// for better performance.
-type DefaultFormatter struct {
-	IncludeCaller bool
-	Colorize      bool
-	TimeLayout    string
-	// Now overrides the timestamp source; defaults to time.Now. Set it to a
-	// fixed clock in tests for deterministic, golden-file-friendly output.
-	Now func() time.Time
-}
-
-func (f *DefaultFormatter) now() time.Time {
-	if f.Now != nil {
-		return f.Now()
-	}
-	return time.Now()
-}
-
-func appendTwoDigitsSlice(b []byte, val int) []byte {
-	return append(b, byte('0'+val/10), byte('0'+val%10))
-}
-
-func appendFourDigitsSlice(b []byte, val int) []byte {
-	return append(b,
-		byte('0'+val/1000),
-		byte('0'+val/100%10),
-		byte('0'+val/10%10),
-		byte('0'+val%10))
-}
-
-func appendTimestampSlice(b []byte, t time.Time) []byte {
-	y, m, d := t.Date()
-	hh, mm, ss := t.Clock()
-	b = appendFourDigitsSlice(b, y)
-	b = append(b, '-')
-	b = appendTwoDigitsSlice(b, int(m))
-	b = append(b, '-')
-	b = appendTwoDigitsSlice(b, d)
-	b = append(b, ' ')
-	b = appendTwoDigitsSlice(b, hh)
-	b = append(b, ':')
-	b = appendTwoDigitsSlice(b, mm)
-	b = append(b, ':')
-	b = appendTwoDigitsSlice(b, ss)
-	return b
-}
-
 func basename(path string) string {
 	for i := len(path) - 1; i >= 0; i-- {
 		if path[i] == '/' || path[i] == '\\' {
@@ -1535,188 +1459,6 @@ func basename(path string) string {
 		}
 	}
 	return path
-}
-
-// IncludeCallerInfo implements CallerAwareFormatter.
-func (f *DefaultFormatter) IncludeCallerInfo() bool { return f.IncludeCaller }
-
-// FormatWithCallerTo implements CallerAwareFormatter.
-func (f *DefaultFormatter) FormatWithCallerTo(level LogLevel, message string, fields []Field, caller Caller, w io.Writer) {
-	f.writeFrame(level, w, &caller, func(writer io.Writer) {
-		writeTextSafe(writer, message)
-		writeFieldsText(writer, fields, message != "")
-	})
-}
-
-// writeFrame renders the timestamp/caller/level prefix. A non-nil caller was
-// resolved by the logger on the goroutine that logged; otherwise the call site
-// is resolved here, from this goroutine's stack.
-func (f *DefaultFormatter) writeFrame(level LogLevel, w io.Writer, caller *Caller, messageWriter func(io.Writer)) {
-	var tmp [128]byte
-	b := tmp[:0]
-	now := f.now()
-	if f.TimeLayout != "" {
-		b = append(b, now.Format(f.TimeLayout)...)
-	} else {
-		b = appendTimestampSlice(b, now)
-	}
-	if f.IncludeCaller {
-		file, line := "", 0
-		if caller != nil {
-			file, line = caller.File, caller.Line
-		} else {
-			file, line = resolveCaller(0)
-		}
-		b = append(b, ' ', '-', ' ')
-		b = append(b, file...)
-		b = append(b, ':')
-		b = strconv.AppendInt(b, int64(line), 10)
-	}
-	b = append(b, ' ', '-', ' ', '[')
-	var color string
-	if f.Colorize {
-		color = levelColors[level]
-		if color != "" {
-			b = append(b, color...)
-		}
-	}
-	if level >= 0 && int(level) < len(levelBytes) {
-		b = append(b, levelBytes[level]...)
-	} else {
-		b = append(b, "UNKNOWN"...)
-	}
-	if color != "" {
-		b = append(b, colorReset...)
-	}
-	b = append(b, ']', ' ')
-	w.Write(b)
-	messageWriter(w)
-	w.Write([]byte{'\n'})
-}
-
-func (f *DefaultFormatter) Format(level LogLevel, message string) string {
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	f.FormatWithFieldsTo(level, message, nil, buf)
-	s := buf.String()
-	bufferPool.Put(buf)
-	return s
-}
-
-func (f *DefaultFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
-	f.writeFrame(level, w, nil, func(writer io.Writer) {
-		writeTextSafe(writer, message)
-	})
-}
-
-func (f *DefaultFormatter) FormatWithFields(level LogLevel, message string, fields []Field) string {
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	f.FormatWithFieldsTo(level, message, fields, buf)
-	s := buf.String()
-	bufferPool.Put(buf)
-	return s
-}
-
-func (f *DefaultFormatter) FormatWithFieldsTo(level LogLevel, message string, fields []Field, w io.Writer) {
-	f.writeFrame(level, w, nil, func(writer io.Writer) {
-		writeTextSafe(writer, message)
-		writeFieldsText(writer, fields, message != "")
-	})
-}
-
-// JSONFormatter formats log messages as JSON
-// JSONFormatter formats log messages as JSON. The IncludeCaller flag controls
-// whether caller information is included in the output.
-type JSONFormatter struct {
-	IncludeCaller bool
-	TimeLayout    string
-	// Now overrides the timestamp source; defaults to time.Now. Set it to a
-	// fixed clock in tests for deterministic, golden-file-friendly output.
-	Now func() time.Time
-}
-
-func (f *JSONFormatter) now() time.Time {
-	if f.Now != nil {
-		return f.Now()
-	}
-	return time.Now()
-}
-
-// IncludeCallerInfo implements CallerAwareFormatter.
-func (f *JSONFormatter) IncludeCallerInfo() bool { return f.IncludeCaller }
-
-// FormatWithCallerTo implements CallerAwareFormatter.
-func (f *JSONFormatter) FormatWithCallerTo(level LogLevel, message string, fields []Field, caller Caller, w io.Writer) {
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	f.formatBuffer(level, message, fields, &caller, buf)
-	buf.WriteTo(w)
-	bufferPool.Put(buf)
-}
-
-// formatBuffer renders one entry. A non-nil caller was resolved by the logger on
-// the goroutine that logged; otherwise the call site is resolved here.
-func (f *JSONFormatter) formatBuffer(level LogLevel, message string, fields []Field, caller *Caller, buf *bytes.Buffer) {
-	now := f.now()
-	buf.WriteString(`{"timestamp":"`)
-	if f.TimeLayout != "" {
-		buf.WriteString(now.Format(f.TimeLayout))
-	} else {
-		buf.WriteString(now.Format(time.RFC3339))
-	}
-	buf.WriteString(`","level":"`)
-	buf.WriteString(logLevelToString(level))
-	buf.WriteString(`","message":`)
-	appendJSONString(buf, message)
-	if f.IncludeCaller {
-		file, line := "", 0
-		if caller != nil {
-			file, line = caller.File, caller.Line
-		} else {
-			file, line = resolveCaller(0)
-		}
-		buf.WriteString(`,"file":`)
-		appendJSONString(buf, file)
-		buf.WriteString(`,"line":`)
-		buf.WriteString(strconv.Itoa(line))
-	}
-	appendJSONFields(buf, fields)
-	buf.WriteString("}\n")
-}
-
-func (f *JSONFormatter) Format(level LogLevel, message string) string {
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	f.formatBuffer(level, message, nil, nil, buf)
-	s := buf.String()
-	bufferPool.Put(buf)
-	return s
-}
-
-func (f *JSONFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	f.formatBuffer(level, message, nil, nil, buf)
-	buf.WriteTo(w)
-	bufferPool.Put(buf)
-}
-
-func (f *JSONFormatter) FormatWithFields(level LogLevel, message string, fields []Field) string {
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	f.formatBuffer(level, message, fields, nil, buf)
-	s := buf.String()
-	bufferPool.Put(buf)
-	return s
-}
-
-func (f *JSONFormatter) FormatWithFieldsTo(level LogLevel, message string, fields []Field, w io.Writer) {
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	f.formatBuffer(level, message, fields, nil, buf)
-	buf.WriteTo(w)
-	bufferPool.Put(buf)
 }
 
 func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, fields []Field, _ []Field) {
@@ -1753,7 +1495,7 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 				level:   level,
 				message: message,
 				fields:  cloneFields(fields),
-				caller:  l.resolveCallerForFormatter(),
+				caller:  l.resolveCallerForEntry(),
 			}
 			if l.enqueueAsync(req) {
 				return
@@ -1788,16 +1530,12 @@ func (l *Logger) withStacktrace(level LogLevel, fields []Field) []Field {
 	return append(out, String("stacktrace", string(debug.Stack())))
 }
 
-// resolveCallerForFormatter resolves the call site when the active formatter
-// renders one, and returns nil otherwise so the cost is only paid when the
-// result is used.
-func (l *Logger) resolveCallerForFormatter() *Caller {
-	fh := l.formatter.Load()
-	if fh == nil || fh.f == nil {
-		return nil
-	}
-	caf, ok := fh.f.(CallerAwareFormatter)
-	if !ok || !caf.IncludeCallerInfo() {
+// resolveCallerForEntry resolves the call site when the logger records one, and
+// returns nil otherwise so the cost is only paid when the result is used. It
+// must run on the goroutine that logged: resolved on the async worker it would
+// describe the worker.
+func (l *Logger) resolveCallerForEntry() *Caller {
+	if !l.wantCaller.Load() {
 		return nil
 	}
 	file, line := resolveCaller(int(l.callerSkip.Load()))
@@ -1805,11 +1543,10 @@ func (l *Logger) resolveCallerForFormatter() *Caller {
 }
 
 func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, caller *Caller) {
-	fh := l.formatter.Load()
-	if fh == nil || fh.f == nil {
+	eh := l.encoder.Load()
+	if eh == nil || eh.e == nil {
 		return
 	}
-	formatter := fh.f
 
 	wh := l.output.Load()
 	var writer io.Writer
@@ -1817,126 +1554,106 @@ func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, ca
 		writer = wh.w
 	}
 	if writer == nil {
-		switch level {
-		case FATAL:
-			os.Exit(1)
-		case PANIC:
-			panic(message)
-		}
+		l.finishTerminal(level, message)
 		return
 	}
 
-	// Tee to any additional level-scoped outputs whose threshold this entry meets
-	// (e.g. mirror ERROR/FATAL to an alerting sink while everything goes to a file).
-	if lop := l.levelOutputs.Load(); lop != nil && len(*lop) > 0 {
-		writers := make([]io.Writer, 1, len(*lop)+1)
-		writers[0] = writer
-		for _, lo := range *lop {
-			if level >= lo.min {
-				writers = append(writers, lo.w)
-			}
-		}
-		if len(writers) > 1 {
-			writer = io.MultiWriter(writers...)
-		}
-	}
-
-	// Mask/dedup/truncate fields once, before both hooks and the formatter see them.
+	// Mask, de-duplicate and truncate once, before either the hooks or the
+	// encoder see the fields.
 	fields = l.normalizeFields(fields)
-
-	hooks := l.hooksSnapshot()
 	resolvedMessage := l.redactMessage(message)
 
-	write := func(fn func(io.Writer)) {
-		ec := &errCapturingWriter{w: writer}
-		if l.syncWrites.Load() {
-			l.writeMu.Lock()
-			fn(ec)
-			l.writeMu.Unlock()
-		} else {
-			// Shared rather than unguarded: concurrent writes still proceed in
-			// parallel, but a writer swap or Close can wait them out instead of
-			// closing a writer somebody is still using.
-			l.writeMu.RLock()
-			fn(ec)
-			l.writeMu.RUnlock()
+	for _, reg := range l.hooksSnapshot() {
+		if reg.levels != nil {
+			if _, ok := reg.levels[level]; !ok {
+				continue
+			}
 		}
-		l.reportWriteError(ec.err)
-		switch level {
-		case FATAL:
-			os.Exit(1)
-		case PANIC:
-			panic(resolvedMessage)
+		if reg.fieldsFilter != nil && !reg.fieldsFilter(fields) {
+			continue
 		}
+		if reg.filter != nil && !reg.filter(level, resolvedMessage, fields) {
+			continue
+		}
+		l.fireHook(reg.target, level, resolvedMessage, fields)
 	}
 
-	if len(hooks) > 0 {
-		for _, reg := range hooks {
-			if reg.levels != nil {
-				if _, ok := reg.levels[level]; !ok {
-					continue
+	entry := Entry{
+		Level:   level,
+		Message: resolvedMessage,
+		Fields:  fields,
+		Time:    l.now(),
+	}
+	if caller != nil {
+		entry.Caller = *caller
+	} else if l.wantCaller.Load() {
+		file, line := resolveCaller(int(l.callerSkip.Load()))
+		entry.Caller = Caller{File: file, Line: line}
+	}
+
+	// One pooled buffer per entry, encoded once and written once. The encoder
+	// appends, so nothing here allocates per field.
+	bufp := encodeBufPool.Get().(*[]byte)
+	*bufp = eh.e.Encode((*bufp)[:0], entry)
+	payload := *bufp
+
+	err := l.writePayload(level, writer, payload)
+	encodeBufPool.Put(bufp)
+
+	l.reportWriteError(err)
+	l.finishTerminal(level, resolvedMessage)
+}
+
+// writePayload writes one encoded entry, taking the output lock as configured
+// and mirroring to any level-scoped outputs.
+func (l *Logger) writePayload(level LogLevel, writer io.Writer, payload []byte) error {
+	var err error
+	write := func() {
+		if _, e := writer.Write(payload); e != nil && err == nil {
+			err = e
+		}
+		if lop := l.levelOutputs.Load(); lop != nil {
+			for _, lo := range *lop {
+				if level >= lo.min {
+					if _, e := lo.w.Write(payload); e != nil && err == nil {
+						err = e
+					}
 				}
 			}
-			if reg.fieldsFilter != nil && !reg.fieldsFilter(fields) {
-				continue
-			}
-			if reg.filter != nil && !reg.filter(level, resolvedMessage, fields) {
-				continue
-			}
-			l.fireHook(reg.target, level, resolvedMessage, fields)
 		}
 	}
-
-	if caller != nil {
-		if caf, ok := formatter.(CallerAwareFormatter); ok {
-			write(func(w io.Writer) {
-				caf.FormatWithCallerTo(level, resolvedMessage, fields, *caller, w)
-			})
-			return
-		}
+	if l.syncWrites.Load() {
+		l.writeMu.Lock()
+		write()
+		l.writeMu.Unlock()
+	} else {
+		// Shared rather than unguarded: concurrent writes still proceed in
+		// parallel, but a writer swap or Close can wait them out instead of
+		// closing a writer somebody is still using.
+		l.writeMu.RLock()
+		write()
+		l.writeMu.RUnlock()
 	}
+	return err
+}
 
-	if len(fields) > 0 {
-		if sfw, ok := formatter.(StructuredWriterFormatter); ok {
-			write(func(w io.Writer) {
-				sfw.FormatWithFieldsTo(level, resolvedMessage, fields, w)
-			})
-			return
-		}
-		if sf, ok := formatter.(StructuredFormatter); ok {
-			formatted := sf.FormatWithFields(level, resolvedMessage, fields)
-			write(func(w io.Writer) {
-				io.WriteString(w, formatted)
-			})
-			return
-		}
-
-		msgWithFields := appendFieldsToMessage(resolvedMessage, fields)
-		if wf, ok := formatter.(WriterFormatter); ok {
-			write(func(w io.Writer) {
-				wf.FormatTo(level, msgWithFields, w)
-			})
-			return
-		}
-
-		formatted := formatter.Format(level, msgWithFields)
-		write(func(w io.Writer) {
-			io.WriteString(w, formatted)
-		})
-		return
+// finishTerminal carries out what a terminal level promises, after its entry
+// has been written.
+func (l *Logger) finishTerminal(level LogLevel, message string) {
+	switch level {
+	case FATAL:
+		os.Exit(1)
+	case PANIC:
+		panic(message)
 	}
+}
 
-	if wf, ok := formatter.(WriterFormatter); ok {
-		write(func(w io.Writer) {
-			wf.FormatTo(level, resolvedMessage, w)
-		})
-		return
+// now returns the entry timestamp, honouring a clock installed for tests.
+func (l *Logger) now() time.Time {
+	if h := l.clock.Load(); h != nil && h.fn != nil {
+		return h.fn()
 	}
-
-	formatted := formatter.Format(level, resolvedMessage)
-	write(func(w io.Writer) {
-		io.WriteString(w, formatted)
-	})
+	return time.Now()
 }
 
 // Close releases any resources owned by the logger, such as open files. Writers
@@ -2004,34 +1721,6 @@ func resolveCaller(extraSkip int) (string, int) {
 	return "unknown", 0
 }
 
-func appendFieldsToMessage(message string, fields []Field) string {
-	if len(fields) == 0 {
-		return message
-	}
-	b := builderPool.Get().(*strings.Builder)
-	b.Reset()
-	if message != "" {
-		writeTextSafe(b, message)
-		writeFieldsText(b, fields, true)
-	} else {
-		writeFieldsText(b, fields, false)
-	}
-	result := b.String()
-	builderPool.Put(b)
-	return result
-}
-
-func writeFieldsText(w io.Writer, fields []Field, prefixSpace bool) {
-	for i, field := range fields {
-		if prefixSpace || i > 0 {
-			w.Write([]byte{' '})
-		}
-		io.WriteString(w, field.Key)
-		w.Write([]byte{'='})
-		writeFieldValueText(w, field.Value)
-	}
-}
-
 // containsControl reports whether s holds a character that would break a
 // line-oriented log record.
 func containsControl(s string) bool {
@@ -2041,183 +1730,6 @@ func containsControl(s string) bool {
 		}
 	}
 	return false
-}
-
-// writeTextSafe writes s, quoting it if it contains control characters. Without
-// this a newline inside a message or a field value ends the record, and whatever
-// follows reads as a genuine entry of its own -- log forging, using data that
-// often comes straight from a request.
-func writeTextSafe(w io.Writer, s string) {
-	if !containsControl(s) {
-		io.WriteString(w, s)
-		return
-	}
-	io.WriteString(w, strconv.Quote(s))
-}
-
-func writeFieldValueText(w io.Writer, val interface{}) {
-	if s, ok := encodeTextWithRegistry(val); ok {
-		writeTextSafe(w, s)
-		return
-	}
-	switch v := val.(type) {
-	case string:
-		writeTextSafe(w, v)
-	case int:
-		var buf [20]byte
-		w.Write(strconv.AppendInt(buf[:0], int64(v), 10))
-	case int64:
-		var buf [20]byte
-		w.Write(strconv.AppendInt(buf[:0], v, 10))
-	case uint:
-		var buf [20]byte
-		w.Write(strconv.AppendUint(buf[:0], uint64(v), 10))
-	case uint64:
-		var buf [20]byte
-		w.Write(strconv.AppendUint(buf[:0], v, 10))
-	case float64:
-		var buf [64]byte
-		w.Write(strconv.AppendFloat(buf[:0], v, 'f', -1, 64))
-	case float32:
-		var buf [64]byte
-		w.Write(strconv.AppendFloat(buf[:0], float64(v), 'f', -1, 32))
-	case bool:
-		if v {
-			w.Write([]byte("true"))
-		} else {
-			w.Write([]byte("false"))
-		}
-	case fmt.Stringer:
-		writeTextSafe(w, v.String())
-	case error:
-		writeTextSafe(w, v.Error())
-	default:
-		writeTextSafe(w, fmt.Sprint(v))
-	}
-}
-
-const hexDigits = "0123456789abcdef"
-
-// appendJSONString writes s as a JSON string, quotes included.
-//
-// strconv.Quote is not usable here: it produces Go literal syntax, so invalid
-// UTF-8 comes out as \xNN and non-printable runes outside the BMP as \U0001d173,
-// neither of which is a JSON escape. A single such byte -- which truncation can
-// manufacture by cutting mid-rune -- makes the whole entry unparseable.
-func appendJSONString(buf *bytes.Buffer, s string) {
-	buf.WriteByte('"')
-	start := 0
-	for i := 0; i < len(s); {
-		if b := s[i]; b < utf8.RuneSelf {
-			if b >= ' ' && b != '"' && b != '\\' {
-				i++
-				continue
-			}
-			buf.WriteString(s[start:i])
-			switch b {
-			case '"':
-				buf.WriteString(`\"`)
-			case '\\':
-				buf.WriteString(`\\`)
-			case '\n':
-				buf.WriteString(`\n`)
-			case '\r':
-				buf.WriteString(`\r`)
-			case '\t':
-				buf.WriteString(`\t`)
-			default:
-				buf.WriteString(`\u00`)
-				buf.WriteByte(hexDigits[b>>4])
-				buf.WriteByte(hexDigits[b&0xF])
-			}
-			i++
-			start = i
-			continue
-		}
-		if r, size := utf8.DecodeRuneInString(s[i:]); r == utf8.RuneError && size == 1 {
-			buf.WriteString(s[start:i])
-			buf.WriteString(`�`)
-			i++
-			start = i
-		} else {
-			i += size
-		}
-	}
-	buf.WriteString(s[start:])
-	buf.WriteByte('"')
-}
-
-func appendJSONFields(buf *bytes.Buffer, fields []Field) {
-	for _, field := range fields {
-		buf.WriteByte(',')
-		appendJSONString(buf, field.Key)
-		buf.WriteByte(':')
-		appendJSONValue(buf, field.Value)
-	}
-}
-
-func appendJSONValue(buf *bytes.Buffer, val interface{}) {
-	if encoded, ok := encodeJSONWithRegistry(val); ok {
-		switch v := encoded.(type) {
-		case string:
-			appendJSONString(buf, v)
-		case []byte:
-			appendJSONString(buf, string(v))
-		default:
-			if data, err := json.Marshal(v); err == nil {
-				buf.Write(data)
-			} else {
-				appendJSONString(buf, fmt.Sprint(v))
-			}
-		}
-		return
-	}
-	switch v := val.(type) {
-	case string:
-		appendJSONString(buf, v)
-		return
-	case int:
-		buf.WriteString(strconv.Itoa(v))
-		return
-	case int64:
-		buf.WriteString(strconv.FormatInt(v, 10))
-		return
-	case uint:
-		buf.WriteString(strconv.FormatUint(uint64(v), 10))
-		return
-	case uint64:
-		buf.WriteString(strconv.FormatUint(v, 10))
-		return
-	case float64:
-		buf.WriteString(strconv.FormatFloat(v, 'f', -1, 64))
-		return
-	case float32:
-		buf.WriteString(strconv.FormatFloat(float64(v), 'f', -1, 32))
-		return
-	case bool:
-		if v {
-			buf.WriteString("true")
-		} else {
-			buf.WriteString("false")
-		}
-		return
-	case fmt.Stringer:
-		appendJSONString(buf, v.String())
-		return
-	case error:
-		appendJSONString(buf, v.Error())
-		return
-	case json.Marshaler:
-		if data, err := v.MarshalJSON(); err == nil {
-			buf.Write(data)
-			return
-		}
-	}
-	if data, err := json.Marshal(val); err == nil {
-		buf.Write(data)
-		return
-	}
-	appendJSONString(buf, fmt.Sprint(val))
 }
 
 // logf formats and logs a message, but only once the level has been checked --
