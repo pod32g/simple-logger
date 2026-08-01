@@ -67,7 +67,7 @@ func main() {
 
 	logger.Info("starting http server", log.String("addr", srv.Addr))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("server exited", log.Error("error", err))
+		logger.Error("server exited", log.Err("error", err))
 		os.Exit(1)
 	}
 }

@@ -3,6 +3,7 @@ package log
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -104,13 +105,40 @@ func Float64(key string, value float64) Field {
 	return Field{Key: key, Value: value}
 }
 func Bool(key string, value bool) Field { return Field{Key: key, Value: value} }
-func Error(key string, err error) Field {
+
+func Any(key string, value interface{}) Field { return Field{Key: key, Value: value} }
+
+// Err records an error. It is named Err rather than Error so that the package
+// can offer Error as a logging function, which every comparable library does;
+// zerolog uses the same name for the same reason.
+func Err(key string, err error) Field {
 	if err == nil {
 		return Field{Key: key, Value: nil}
 	}
 	return Field{Key: key, Value: err.Error()}
 }
-func Any(key string, value interface{}) Field { return Field{Key: key, Value: value} }
+
+func Int32(key string, value int32) Field     { return Field{Key: key, Value: int64(value)} }
+func Uint32(key string, value uint32) Field   { return Field{Key: key, Value: uint64(value)} }
+func Uint64(key string, value uint64) Field   { return Field{Key: key, Value: value} }
+func Float32(key string, value float32) Field { return Field{Key: key, Value: value} }
+
+// Duration records a duration, rendered as "1.5s" rather than a nanosecond
+// count.
+func Duration(key string, value time.Duration) Field { return Field{Key: key, Value: value} }
+
+// Time records a timestamp, rendered in RFC 3339.
+func Time(key string, value time.Time) Field { return Field{Key: key, Value: value} }
+
+// Stringer records any value with a String method, calling it at encode time so
+// a filtered-out entry never pays for it.
+func Stringer(key string, value fmt.Stringer) Field { return Field{Key: key, Value: value} }
+
+// Binary records bytes as a hex string. Without it a []byte renders through
+// fmt as a list of decimal numbers, which is unreadable and enormous.
+func Binary(key string, value []byte) Field {
+	return Field{Key: key, Value: hex.EncodeToString(value)}
+}
 
 // ErrorVerbose captures the full error including its wrapped cause chain and, for
 // errors that carry one (e.g. github.com/pkg/errors), the originating stack via
@@ -645,10 +673,14 @@ type LogLevel int
 
 // Log levels
 const (
-	DEBUG LogLevel = iota
+	// TRACE is the most verbose level, below DEBUG.
+	TRACE LogLevel = iota
+	DEBUG
 	INFO
 	WARN
 	ERROR
+	// PANIC logs the entry and then panics, the way FATAL logs and then exits.
+	PANIC
 	FATAL
 )
 
@@ -657,10 +689,13 @@ func (l LogLevel) String() string {
 	return logLevelToString(l)
 }
 
-// ParseLevel converts a level name (case-insensitive: debug, info, warn, error,
-// fatal) to a LogLevel. It returns an error for an unrecognized name.
+// ParseLevel converts a level name (case-insensitive: trace, debug, info, warn,
+// error, panic, fatal) to a LogLevel. It returns an error for an unrecognized
+// name.
 func ParseLevel(s string) (LogLevel, error) {
 	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "TRACE":
+		return TRACE, nil
 	case "DEBUG":
 		return DEBUG, nil
 	case "INFO":
@@ -669,6 +704,8 @@ func ParseLevel(s string) (LogLevel, error) {
 		return WARN, nil
 	case "ERROR":
 		return ERROR, nil
+	case "PANIC":
+		return PANIC, nil
 	case "FATAL":
 		return FATAL, nil
 	default:
@@ -682,31 +719,23 @@ func (l LogLevel) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + strings.ToLower(l.String()) + `"`), nil
 }
 
-// UnmarshalJSON accepts either a level name ("debug", "WARN", "warning") or the
-// numeric value. Names are what every other entry point takes -- LOG_LEVEL, the
-// HTTP level endpoint -- so a JSON config that spells the level out should not
-// be the one place that rejects it.
+// UnmarshalJSON accepts a level name ("debug", "WARN", "warning"), matching
+// every other entry point: LOG_LEVEL, the HTTP level endpoint, ParseLevel.
+//
+// Numbers are deliberately rejected. A numeric level in a config file means
+// whatever position that level happens to occupy, so adding TRACE below DEBUG
+// silently turned every existing 3 from ERROR into WARN. A name cannot drift
+// that way.
 func (l *LogLevel) UnmarshalJSON(data []byte) error {
-	if len(data) > 0 && data[0] == '"' {
-		var name string
-		if err := json.Unmarshal(data, &name); err != nil {
-			return err
-		}
-		lvl, err := ParseLevel(name)
-		if err != nil {
-			return err
-		}
-		*l = lvl
-		return nil
+	var name string
+	if err := json.Unmarshal(data, &name); err != nil {
+		return fmt.Errorf("log level must be a name such as \"debug\" or \"error\": %w", err)
 	}
-	var n int
-	if err := json.Unmarshal(data, &n); err != nil {
-		return fmt.Errorf("log level must be a name or a number: %w", err)
+	lvl, err := ParseLevel(name)
+	if err != nil {
+		return err
 	}
-	if n < int(DEBUG) || n > int(FATAL) {
-		return fmt.Errorf("log level %d out of range", n)
-	}
-	*l = LogLevel(n)
+	*l = lvl
 	return nil
 }
 
@@ -811,6 +840,52 @@ func Default() *Logger {
 	return defaultLogger.Load()
 }
 
+// Package-level logging goes through Default(). These exist because
+// log.Info("ready") is the first line of nearly every getting-started guide in
+// the ecosystem, and needing log.Default().Info is friction with no upside.
+
+// Trace logs a message at TRACE on the default logger.
+func Trace(message string, fields ...Field) { Default().Trace(message, fields...) }
+
+// Tracef logs a formatted message at TRACE on the default logger.
+func Tracef(format string, args ...interface{}) { Default().Tracef(format, args...) }
+
+// Debug logs a message at DEBUG on the default logger.
+func Debug(message string, fields ...Field) { Default().Debug(message, fields...) }
+
+// Debugf logs a formatted message at DEBUG on the default logger.
+func Debugf(format string, args ...interface{}) { Default().Debugf(format, args...) }
+
+// Info logs a message at INFO on the default logger.
+func Info(message string, fields ...Field) { Default().Info(message, fields...) }
+
+// Infof logs a formatted message at INFO on the default logger.
+func Infof(format string, args ...interface{}) { Default().Infof(format, args...) }
+
+// Warn logs a message at WARN on the default logger.
+func Warn(message string, fields ...Field) { Default().Warn(message, fields...) }
+
+// Warnf logs a formatted message at WARN on the default logger.
+func Warnf(format string, args ...interface{}) { Default().Warnf(format, args...) }
+
+// Error logs a message at ERROR on the default logger.
+func Error(message string, fields ...Field) { Default().Error(message, fields...) }
+
+// Errorf logs a formatted message at ERROR on the default logger.
+func Errorf(format string, args ...interface{}) { Default().Errorf(format, args...) }
+
+// Panic logs a message at PANIC on the default logger.
+func Panic(message string, fields ...Field) { Default().Panic(message, fields...) }
+
+// Panicf logs a formatted message at PANIC on the default logger.
+func Panicf(format string, args ...interface{}) { Default().Panicf(format, args...) }
+
+// Fatal logs a message at FATAL on the default logger.
+func Fatal(message string, fields ...Field) { Default().Fatal(message, fields...) }
+
+// Fatalf logs a formatted message at FATAL on the default logger.
+func Fatalf(format string, args ...interface{}) { Default().Fatalf(format, args...) }
+
 // SetDefault replaces the process-wide default logger returned by Default.
 func SetDefault(l *Logger) {
 	if l != nil {
@@ -875,6 +950,12 @@ func (l *Logger) With(fields ...Field) *Logger {
 	bound = append(bound, l.boundFields...)
 	bound = append(bound, fields...)
 	return &Logger{loggerCore: l.loggerCore, boundFields: bound}
+}
+
+// WithError returns a derived logger that carries err on every entry, which is
+// the shape logrus users reach for most.
+func (l *Logger) WithError(err error) *Logger {
+	return l.With(Err("error", err))
 }
 
 const loggerNameKey = "logger"
@@ -1351,20 +1432,24 @@ func (l *Logger) mergeContextFields(ctx context.Context, fields []Field) []Field
 	return combined
 }
 
-var levelStrings = [...]string{"DEBUG", "INFO", "WARN", "ERROR", "FATAL"}
+var levelStrings = [...]string{"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "PANIC", "FATAL"}
 var levelBytes = [...][]byte{
+	[]byte("TRACE"),
 	[]byte("DEBUG"),
 	[]byte("INFO"),
 	[]byte("WARN"),
 	[]byte("ERROR"),
+	[]byte("PANIC"),
 	[]byte("FATAL"),
 }
 
 var levelColors = map[LogLevel]string{
+	TRACE: "\033[37m", // Grey
 	DEBUG: "\033[36m", // Cyan
 	INFO:  "\033[32m", // Green
 	WARN:  "\033[33m", // Yellow
 	ERROR: "\033[31m", // Red
+	PANIC: "\033[35m", // Magenta
 	FATAL: "\033[35m", // Magenta
 }
 
@@ -1379,6 +1464,10 @@ type callerEntry struct {
 }
 
 var callerCache sync.Map
+
+// terminal reports whether the level ends the program's normal flow, which
+// means the entry must be written before control leaves the logger.
+func (l LogLevel) terminal() bool { return l == FATAL || l == PANIC }
 
 // logLevelToString converts a LogLevel to its string representation
 func logLevelToString(level LogLevel) string {
@@ -1644,11 +1733,11 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 		fields = merged
 	}
 
-	// FATAL must terminate the process. It is never sampled away and never
-	// deferred to the async worker (where it could be dropped or race the
-	// caller); it always runs synchronously on the calling goroutine so os.Exit
-	// fires before logEntry returns.
-	if level != FATAL {
+	// FATAL and PANIC end the program or unwind it, so they are never sampled
+	// away and never deferred to the async worker (where they could be dropped
+	// or race the caller). They run synchronously on the calling goroutine, so
+	// the exit or panic happens before logEntry returns.
+	if !level.terminal() {
 		if holder := l.sampler.Load(); holder != nil && holder.fn != nil {
 			if !holder.fn.Allow(level, message, fields) {
 				return
@@ -1673,8 +1762,8 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 			return
 		}
 	} else if l.async.Load() != nil {
-		// Everything already queued explains why we are dying. Write it out
-		// before os.Exit takes the queue with it.
+		// Everything already queued explains why we are stopping. Write it out
+		// before the exit or panic takes the queue with it.
 		l.Flush()
 	}
 
@@ -1728,8 +1817,11 @@ func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, ca
 		writer = wh.w
 	}
 	if writer == nil {
-		if level == FATAL {
+		switch level {
+		case FATAL:
 			os.Exit(1)
+		case PANIC:
+			panic(message)
 		}
 		return
 	}
@@ -1753,6 +1845,7 @@ func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, ca
 	fields = l.normalizeFields(fields)
 
 	hooks := l.hooksSnapshot()
+	resolvedMessage := l.redactMessage(message)
 
 	write := func(fn func(io.Writer)) {
 		ec := &errCapturingWriter{w: writer}
@@ -1769,12 +1862,13 @@ func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, ca
 			l.writeMu.RUnlock()
 		}
 		l.reportWriteError(ec.err)
-		if level == FATAL {
+		switch level {
+		case FATAL:
 			os.Exit(1)
+		case PANIC:
+			panic(resolvedMessage)
 		}
 	}
-
-	resolvedMessage := l.redactMessage(message)
 
 	if len(hooks) > 0 {
 		for _, reg := range hooks {
@@ -2134,6 +2228,38 @@ func (l *Logger) logf(level LogLevel, format string, args ...interface{}) {
 		return
 	}
 	l.logEntry(level, fmt.Sprintf(format, args...), true, nil, nil)
+}
+
+// Trace logs a message at TRACE with optional structured fields.
+func (l *Logger) Trace(message string, fields ...Field) {
+	l.logEntry(TRACE, message, true, fields, nil)
+}
+
+// Tracef logs a formatted message at TRACE. The message is formatted only
+// if TRACE is enabled.
+func (l *Logger) Tracef(format string, args ...interface{}) {
+	l.logf(TRACE, format, args...)
+}
+
+// TraceContext logs at TRACE, adding any fields the context carries.
+func (l *Logger) TraceContext(ctx context.Context, message string, fields ...Field) {
+	l.logEntry(TRACE, message, true, l.mergeContextFields(ctx, fields), nil)
+}
+
+// Panic logs a message at PANIC with optional structured fields and then panics.
+func (l *Logger) Panic(message string, fields ...Field) {
+	l.logEntry(PANIC, message, true, fields, nil)
+}
+
+// Panicf logs a formatted message at PANIC and then panics. The message is formatted only
+// if PANIC is enabled.
+func (l *Logger) Panicf(format string, args ...interface{}) {
+	l.logf(PANIC, format, args...)
+}
+
+// PanicContext logs at PANIC, adding any fields the context carries and then panics.
+func (l *Logger) PanicContext(ctx context.Context, message string, fields ...Field) {
+	l.logEntry(PANIC, message, true, l.mergeContextFields(ctx, fields), nil)
 }
 
 // Debug logs a message at DEBUG with optional structured fields.

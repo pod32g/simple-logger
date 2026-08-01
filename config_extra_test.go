@@ -95,7 +95,6 @@ func TestLoadConfigAcceptsLevelName(t *testing.T) {
 		`{"level":"WARN"}`:    log.WARN,
 		`{"level":"warning"}`: log.WARN,
 		`{"level":"error"}`:   log.ERROR,
-		`{"level":3}`:         log.ERROR,
 	}
 	for body, want := range cases {
 		path := filepath.Join(t.TempDir(), "cfg.json")

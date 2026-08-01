@@ -26,16 +26,16 @@ func main() {
 	if *configPath != "" {
 		go func() {
 			if err := logger.Watch(ctx, *configPath, log.WatchInterval(2*time.Second), log.WatchErrorHandler(func(err error) {
-				logger.Warn("config reload failed", log.Error("error", err))
+				logger.Warn("config reload failed", log.Err("error", err))
 			})); err != nil {
-				logger.Error("watcher exited", log.Error("error", err))
+				logger.Error("watcher exited", log.Err("error", err))
 			}
 		}()
 	}
 
 	updates := make(chan log.Config, 1)
 	go logger.ReloadFrom(ctx, updates, log.WatchErrorHandler(func(err error) {
-		logger.Warn("apply config failed", log.Error("error", err))
+		logger.Warn("apply config failed", log.Err("error", err))
 	}))
 
 	go promptLoop(ctx, logger, updates)

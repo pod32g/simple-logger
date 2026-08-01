@@ -154,7 +154,7 @@ func TestTextFormatterDoesNotForgeLines(t *testing.T) {
 		{"field value", func(l *log.Logger) { l.Info("login", log.String("user", forged)) }},
 		{"message", func(l *log.Logger) { l.Info(forged) }},
 		{"formatted message", func(l *log.Logger) { l.Infof("login %s", forged) }},
-		{"error value", func(l *log.Logger) { l.Info("login", log.Error("err", errString(forged))) }},
+		{"error value", func(l *log.Logger) { l.Info("login", log.Err("err", errString(forged))) }},
 	}
 
 	for _, tc := range cases {

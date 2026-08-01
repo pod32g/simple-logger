@@ -352,6 +352,8 @@ func (h *Hook) Close(ctx context.Context) error {
 
 func severityNumber(level log.LogLevel) logspb.SeverityNumber {
 	switch level {
+	case log.TRACE:
+		return logspb.SeverityNumber_SEVERITY_NUMBER_TRACE
 	case log.DEBUG:
 		return logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG
 	case log.INFO:
@@ -360,6 +362,8 @@ func severityNumber(level log.LogLevel) logspb.SeverityNumber {
 		return logspb.SeverityNumber_SEVERITY_NUMBER_WARN
 	case log.ERROR:
 		return logspb.SeverityNumber_SEVERITY_NUMBER_ERROR
+	case log.PANIC:
+		return logspb.SeverityNumber_SEVERITY_NUMBER_FATAL2
 	case log.FATAL:
 		return logspb.SeverityNumber_SEVERITY_NUMBER_FATAL
 	default:
@@ -369,6 +373,8 @@ func severityNumber(level log.LogLevel) logspb.SeverityNumber {
 
 func logLevelString(level log.LogLevel) string {
 	switch level {
+	case log.TRACE:
+		return "TRACE"
 	case log.DEBUG:
 		return "DEBUG"
 	case log.INFO:
@@ -377,6 +383,8 @@ func logLevelString(level log.LogLevel) string {
 		return "WARN"
 	case log.ERROR:
 		return "ERROR"
+	case log.PANIC:
+		return "PANIC"
 	case log.FATAL:
 		return "FATAL"
 	default:

@@ -49,6 +49,8 @@ func (h *Handler) Handle(_ context.Context, record slog.Record) error {
 
 	msg := record.Message
 	switch levelToLogLevel(record.Level) {
+	case log.TRACE:
+		h.logger.Trace(msg, fields...)
 	case log.DEBUG:
 		h.logger.Debug(msg, fields...)
 	case log.INFO:
@@ -57,6 +59,8 @@ func (h *Handler) Handle(_ context.Context, record slog.Record) error {
 		h.logger.Warn(msg, fields...)
 	case log.ERROR:
 		h.logger.Error(msg, fields...)
+	case log.PANIC:
+		h.logger.Panic(msg, fields...)
 	case log.FATAL:
 		h.logger.Fatal(msg, fields...)
 	default:
@@ -121,6 +125,9 @@ func qualifiedKey(groups []string, key string) string {
 
 func levelToLogLevel(lvl slog.Level) log.LogLevel {
 	switch {
+	case lvl < slog.LevelDebug:
+		// slog has no TRACE; anything below Debug maps onto it.
+		return log.TRACE
 	case lvl <= slog.LevelDebug:
 		return log.DEBUG
 	case lvl <= slog.LevelInfo:

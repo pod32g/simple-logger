@@ -94,7 +94,7 @@ func loggingInterceptor(logger *log.Logger) grpc.UnaryServerInterceptor {
 		}
 
 		if err != nil {
-			logger.Error("grpc call failed", append(fields, log.Error("error", err))...)
+			logger.Error("grpc call failed", append(fields, log.Err("error", err))...)
 			return resp, err
 		}
 
@@ -115,13 +115,13 @@ func main() {
 
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
-		logger.Fatal("failed to listen", log.Error("error", err))
+		logger.Fatal("failed to listen", log.Err("error", err))
 	}
 
 	go func() {
 		logger.Info("starting gRPC server", log.String("addr", lis.Addr().String()))
 		if err := server.Serve(lis); err != nil {
-			logger.Error("gRPC server stopped", log.Error("error", err))
+			logger.Error("gRPC server stopped", log.Err("error", err))
 		}
 	}()
 
@@ -134,7 +134,7 @@ func main() {
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(jsonCodec{})),
 	)
 	if err != nil {
-		logger.Fatal("dial failed", log.Error("error", err))
+		logger.Fatal("dial failed", log.Err("error", err))
 	}
 	defer conn.Close()
 
@@ -144,7 +144,7 @@ func main() {
 	req := &HelloRequest{Name: "world"}
 	var reply HelloReply
 	if err := conn.Invoke(callCtx, "/example.Greeter/SayHello", req, &reply); err != nil {
-		logger.Error("client call failed", log.Error("error", err))
+		logger.Error("client call failed", log.Err("error", err))
 	} else {
 		fmt.Println("client received:", reply.Message)
 	}

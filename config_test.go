@@ -84,7 +84,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 func TestLoadConfigFromFile(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "cfg.json")
-	data := []byte(`{"level":3,"output":"stdout","format":"json","enable_caller":false}`)
+	data := []byte(`{"level":"error","output":"stdout","format":"json","enable_caller":false}`)
 	if err := os.WriteFile(file, data, 0644); err != nil {
 		t.Fatalf("failed to write config file: %v", err)
 	}
