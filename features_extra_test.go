@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -131,5 +132,134 @@ func TestRequestIDHelpers(t *testing.T) {
 	logger.InfoContext(ctx, "handling")
 	if !strings.Contains(buf.String(), "request_id=req-42") {
 		t.Fatalf("expected request_id emitted on context log, got %q", buf.String())
+	}
+}
+
+// --- merged from text_escaping_test.go ---
+
+func lineCount(s string) int {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
+func TestTextFormatterDoesNotForgeLines(t *testing.T) {
+	forged := "eve\n2020-01-01 00:00:00 - [ERROR] fake entry"
+
+	cases := []struct {
+		name string
+		emit func(*log.Logger)
+	}{
+		{"field value", func(l *log.Logger) { l.InfoFields("login", log.String("user", forged)) }},
+		{"message", func(l *log.Logger) { l.InfoString(forged) }},
+		{"formatted args", func(l *log.Logger) { l.Info("login", forged) }},
+		{"error value", func(l *log.Logger) { l.InfoFields("login", log.Error("err", errString(forged))) }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+			tc.emit(l)
+			if n := lineCount(buf.String()); n != 1 {
+				t.Errorf("entry spans %d lines, want 1:\n%s", n, buf.String())
+			}
+			if !strings.Contains(buf.String(), `\n`) {
+				t.Errorf("newline was not escaped:\n%s", buf.String())
+			}
+		})
+	}
+}
+
+func TestConsoleFormatterDoesNotForgeLines(t *testing.T) {
+	var buf bytes.Buffer
+	l := log.NewLogger(&buf, log.INFO, &log.ConsoleFormatter{NoColor: true})
+	l.InfoFields("login\nsecond line", log.String("user", "eve\nadmin"))
+	if n := lineCount(buf.String()); n != 1 {
+		t.Errorf("entry spans %d lines, want 1:\n%s", n, buf.String())
+	}
+}
+
+// Ordinary values must not start getting quoted just because escaping exists.
+func TestTextFormatterLeavesPlainValuesAlone(t *testing.T) {
+	var buf bytes.Buffer
+	l := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+	l.InfoFields("started", log.String("addr", "127.0.0.1:8080"), log.String("note", "with spaces"), log.Int("n", 3))
+
+	got := buf.String()
+	for _, want := range []string{"started", "addr=127.0.0.1:8080", "note=with spaces", "n=3"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q: %s", want, got)
+		}
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
+// --- merged from sampler_memory_test.go ---
+
+// High-cardinality messages must not grow the sampler without bound.
+func TestBurstSamplerBoundsMemory(t *testing.T) {
+	s := log.NewBurstSampler(10*time.Millisecond, 1, 0)
+
+	var before runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	for i := 0; i < 200_000; i++ {
+		s.Allow(log.ERROR, fmt.Sprintf("request %d failed with a reasonably long message", i), nil)
+		if i%5_000 == 0 {
+			time.Sleep(time.Millisecond) // let windows expire so sweeps have work
+		}
+	}
+
+	var after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(s)
+
+	// Retaining every key costs ~25 MiB here; a bounded sampler settles in the
+	// kilobytes. 4 MiB sits well clear of both.
+	if grew := int64(after.HeapAlloc) - int64(before.HeapAlloc); grew > 4<<20 {
+		t.Errorf("sampler retained %d KiB across 200k distinct messages", grew/1024)
+	}
+}
+
+// Sweeping must not change the decisions the sampler makes.
+func TestBurstSamplerStillRateLimits(t *testing.T) {
+	s := log.NewBurstSampler(time.Hour, 2, 3)
+
+	allowed := 0
+	for i := 0; i < 10; i++ {
+		if s.Allow(log.ERROR, "same message", nil) {
+			allowed++
+		}
+	}
+	// first 2, then every 3rd of the remaining 8: entries 5 and 8.
+	if allowed != 4 {
+		t.Errorf("allowed %d of 10, want 4", allowed)
+	}
+
+	// A distinct message keeps its own budget.
+	if !s.Allow(log.ERROR, "other message", nil) {
+		t.Error("first occurrence of a new message should be allowed")
+	}
+}
+
+func TestBurstSamplerReopensAfterWindow(t *testing.T) {
+	s := log.NewBurstSampler(20*time.Millisecond, 1, 0)
+	if !s.Allow(log.WARN, "msg", nil) {
+		t.Fatal("first entry should be allowed")
+	}
+	if s.Allow(log.WARN, "msg", nil) {
+		t.Fatal("second entry within the window should be suppressed")
+	}
+	time.Sleep(30 * time.Millisecond)
+	if !s.Allow(log.WARN, "msg", nil) {
+		t.Error("entry after the window should be allowed again")
 	}
 }

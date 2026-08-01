@@ -49,8 +49,11 @@ jobs:
             echo "::endgroup::"
           done
 
+      # -coverpkg attributes coverage to the packages under test rather than to
+      # the package holding the test, so the end-to-end suite counts towards the
+      # library it exercises instead of reading as zero.
       - name: Test (race + coverage)
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        run: go test -race -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
 
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -1

@@ -35,7 +35,7 @@ race: ## Run tests with the race detector
 
 .PHONY: cover
 cover: ## Run tests with coverage and print a summary
-	$(GO) test -race -covermode=atomic -coverprofile=$(COVERFILE) $(PKG)
+	$(GO) test -race -covermode=atomic -coverpkg=$(PKG) -coverprofile=$(COVERFILE) $(PKG)
 	$(GO) tool cover -func=$(COVERFILE) | tail -1
 
 .PHONY: cover-html

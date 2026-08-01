@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -615,4 +619,209 @@ func (c *closingBuffer) Close() error {
 
 func TestMain(m *testing.M) {
 	m.Run()
+}
+
+// --- merged from printf_test.go ---
+
+func TestFormattedMethods(t *testing.T) {
+	cases := []struct {
+		name  string
+		emit  func(*log.Logger)
+		level string
+	}{
+		{"Debugf", func(l *log.Logger) { l.Debugf("n=%d s=%s", 3, "x") }, "DEBUG"},
+		{"Infof", func(l *log.Logger) { l.Infof("n=%d s=%s", 3, "x") }, "INFO"},
+		{"Warnf", func(l *log.Logger) { l.Warnf("n=%d s=%s", 3, "x") }, "WARN"},
+		{"Errorf", func(l *log.Logger) { l.Errorf("n=%d s=%s", 3, "x") }, "ERROR"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{})
+			tc.emit(l)
+			got := buf.String()
+			if !strings.Contains(got, "n=3 s=x") {
+				t.Errorf("message not formatted: %s", got)
+			}
+			if !strings.Contains(got, "["+tc.level+"]") {
+				t.Errorf("wrong level, want %s: %s", tc.level, got)
+			}
+		})
+	}
+}
+
+// The reason these methods exist: nothing is formatted when the entry is going
+// to be dropped on level.
+func TestFormattedMethodsSkipFormattingWhenDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	l := log.NewLogger(&buf, log.ERROR, &log.DefaultFormatter{})
+
+	formatted := 0
+	arg := stringerFunc(func() string { formatted++; return "expensive" })
+
+	l.Debugf("value=%s", arg)
+	l.Infof("value=%s", arg)
+	l.Warnf("value=%s", arg)
+	if formatted != 0 {
+		t.Errorf("argument was formatted %d times below the level threshold", formatted)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("unexpected output: %s", buf.String())
+	}
+
+	l.Errorf("value=%s", arg)
+	if formatted != 1 {
+		t.Errorf("argument formatted %d times at ERROR, want 1", formatted)
+	}
+	if !strings.Contains(buf.String(), "value=expensive") {
+		t.Errorf("entry missing: %s", buf.String())
+	}
+}
+
+// Formatted messages take the same path as any other message: bound fields,
+// redaction and hooks all still apply.
+func TestFormattedMessagesGoThroughTheNormalPath(t *testing.T) {
+	var buf bytes.Buffer
+	l := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{}).With(log.String("component", "api"))
+	l.SetRedactor(log.NewPatternScrubber(regexp.MustCompile(`secret-\w+`)))
+
+	var hooked string
+	l.AddHook(log.HookFunc(func(_ log.LogLevel, msg string, _ []log.Field) { hooked = msg }))
+
+	l.Infof("token %s rejected", "secret-abc")
+
+	got := buf.String()
+	if !strings.Contains(got, "[REDACTED]") || strings.Contains(got, "secret-abc") {
+		t.Errorf("redaction did not apply to a formatted message: %s", got)
+	}
+	if !strings.Contains(got, `"component":"api"`) {
+		t.Errorf("bound fields missing: %s", got)
+	}
+	if !strings.Contains(hooked, "[REDACTED]") {
+		t.Errorf("hook saw %q, want the redacted message", hooked)
+	}
+}
+
+type stringerFunc func() string
+
+func (f stringerFunc) String() string { return f() }
+
+func TestFatalfExitsAfterLogging(t *testing.T) {
+	if os.Getenv("FATALF_CHILD") == "1" {
+		l := log.NewLogger(os.Stdout, log.INFO, &log.DefaultFormatter{})
+		l.Fatalf("stopping after %d retries", 3)
+		l.InfoString("unreachable")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestFatalfExitsAfterLogging")
+	cmd.Env = append(os.Environ(), "FATALF_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Error("expected a non-zero exit status")
+	}
+	got := string(out)
+	if !strings.Contains(got, "stopping after 3 retries") {
+		t.Errorf("fatal message missing or unformatted: %s", got)
+	}
+	if strings.Contains(got, "unreachable") {
+		t.Errorf("execution continued past Fatalf: %s", got)
+	}
+}
+
+// --- merged from output_lifecycle_test.go ---
+
+type countingCloser struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	closed atomic.Int64
+}
+
+func (c *countingCloser) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *countingCloser) Close() error {
+	c.closed.Add(1)
+	return nil
+}
+
+// A superseded writer must be closed when it is replaced, not held until the
+// logger itself is closed -- a config watcher swaps the output on every reload.
+func TestSupersededWriterIsClosedOnReplacement(t *testing.T) {
+	for _, synchronized := range []bool{true, false} {
+		name := "synchronized"
+		if !synchronized {
+			name = "unsynchronized"
+		}
+		t.Run(name, func(t *testing.T) {
+			first := &countingCloser{}
+			l := log.NewLogger(first, log.INFO, &log.DefaultFormatter{})
+			l.SetSynchronized(synchronized)
+			l.SetOutputWithCloser(first, first)
+
+			var writers []*countingCloser
+			for i := 0; i < 5; i++ {
+				next := &countingCloser{}
+				writers = append(writers, next)
+				l.SetOutputWithCloser(next, next)
+				l.InfoString("after swap")
+			}
+
+			if got := first.closed.Load(); got != 1 {
+				t.Errorf("first writer closed %d times, want 1", got)
+			}
+			for i, w := range writers[:len(writers)-1] {
+				if got := w.closed.Load(); got != 1 {
+					t.Errorf("writer %d closed %d times, want 1", i, got)
+				}
+			}
+			current := writers[len(writers)-1]
+			if got := current.closed.Load(); got != 0 {
+				t.Errorf("current writer closed %d times before Close, want 0", got)
+			}
+			if err := l.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := current.closed.Load(); got != 1 {
+				t.Errorf("current writer closed %d times after Close, want 1", got)
+			}
+		})
+	}
+}
+
+// Swapping the output while unsynchronized writers are in flight must not close
+// a writer somebody is still writing to.
+func TestConcurrentWritesDuringOutputSwap(t *testing.T) {
+	l := log.NewLogger(&countingCloser{}, log.INFO, &log.DefaultFormatter{})
+	l.SetSynchronized(false)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					l.InfoString("concurrent")
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 50; i++ {
+		w := &countingCloser{}
+		l.SetOutputWithCloser(w, w)
+	}
+	close(stop)
+	wg.Wait()
+
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
