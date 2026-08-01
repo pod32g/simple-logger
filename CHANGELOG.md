@@ -63,8 +63,14 @@ surface reaching it is much smaller, and several long-standing gaps are closed.
   checks: groups were flattened into dotted keys and duplicated across repeated
   `WithGroup`/`WithAttrs` pairs, `Record.Time` and `Record.PC` were discarded,
   empty attributes were emitted, and empty groups were not omitted. The suite
-  now runs as part of the bridge's tests. One documented deviation remains: this
-  logger always stamps a time.
+  now runs as part of the bridge's tests, and passes in full: `EntryNoTime` lets
+  a bridge say a record genuinely has no timestamp, and the encoders omit it
+  rather than substituting the moment of encoding.
+
+- Caller resolution asked the runtime for 16 stack frames on every entry when
+  the answer is three or four up. It now walks a short window first and only
+  goes deeper if that window was all internal frames, which cut the cost of
+  `WithCaller` by roughly 30%.
 
 ### Performance
 

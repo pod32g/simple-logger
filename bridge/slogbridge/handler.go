@@ -14,10 +14,6 @@ import (
 // did not: groups nest rather than flattening into dotted keys, the record's
 // own timestamp and source location are used instead of being discarded, empty
 // attributes are skipped, and a group with no attributes is omitted entirely.
-//
-// One deviation remains, by design: slog expects a handler to emit no timestamp
-// when Record.Time is zero, but this logger always stamps an entry. The
-// conformance test asserts every other check.
 type Handler struct {
 	logger *log.Logger
 	level  slog.Leveler
@@ -60,7 +56,11 @@ func (h *Handler) Handle(_ context.Context, record slog.Record) error {
 	fields := insertAt(h.fields, h.groups, recordFields)
 
 	var opts []log.EntryOption
-	if !record.Time.IsZero() {
+	if record.Time.IsZero() {
+		// slog says a record with no time gets no timestamp, rather than the
+		// moment it happened to be encoded.
+		opts = append(opts, log.EntryNoTime())
+	} else {
 		opts = append(opts, log.EntryTime(record.Time))
 	}
 	if record.PC != 0 {

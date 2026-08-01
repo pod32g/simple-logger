@@ -427,12 +427,21 @@ type EntryOption func(*entryOverrides)
 
 type entryOverrides struct {
 	time   time.Time
+	noTime bool
 	caller *Caller
 }
 
 // EntryTime records the entry at t rather than at the moment it is encoded.
 func EntryTime(t time.Time) EntryOption {
 	return func(o *entryOverrides) { o.time = t }
+}
+
+// EntryNoTime records the entry with no timestamp at all. It exists for
+// bridges whose source says a record has no time -- slog expects a handler to
+// emit none when Record.Time is zero -- rather than substituting the moment the
+// entry happened to be encoded.
+func EntryNoTime() EntryOption {
+	return func(o *entryOverrides) { o.noTime = true }
 }
 
 // EntryCaller records an already-resolved call site.
@@ -443,6 +452,7 @@ func EntryCaller(file string, line int) EntryOption {
 type logRequest struct {
 	level   LogLevel
 	entryAt time.Time
+	noTime  bool
 	message string
 	fields  []Field
 	caller  *Caller       // call site resolved by the producer, nil to resolve at format time
@@ -1228,7 +1238,7 @@ func (l *Logger) asyncWorker(st *asyncState) {
 				close(req.flush)
 				continue
 			}
-			l.logEntrySync(req.level, req.message, req.fields, req.caller, req.entryAt)
+			l.logEntrySync(req.level, req.message, req.fields, req.caller, req.entryAt, req.noTime)
 		}
 		return
 	}
@@ -1272,7 +1282,7 @@ func (l *Logger) asyncWorker(st *asyncState) {
 
 	flush := func() {
 		for _, req := range batch {
-			l.logEntrySync(req.level, req.message, req.fields, req.caller, req.entryAt)
+			l.logEntrySync(req.level, req.message, req.fields, req.caller, req.entryAt, req.noTime)
 		}
 		batch = batch[:0]
 		if flushInterval > 0 {
@@ -1493,7 +1503,7 @@ func (l *Logger) logEntry(level LogLevel, message string, fields []Field, ov *en
 				caller:  l.resolveCallerForEntry(),
 			}
 			if ov != nil {
-				req.entryAt = ov.time
+				req.entryAt, req.noTime = ov.time, ov.noTime
 				if ov.caller != nil {
 					req.caller = ov.caller
 				}
@@ -1501,7 +1511,7 @@ func (l *Logger) logEntry(level LogLevel, message string, fields []Field, ov *en
 			if l.enqueueAsync(req) {
 				return
 			}
-			l.logEntrySync(level, message, fields, req.caller, req.entryAt)
+			l.logEntrySync(level, message, fields, req.caller, req.entryAt, req.noTime)
 			return
 		}
 	} else if l.async.Load() != nil {
@@ -1512,14 +1522,15 @@ func (l *Logger) logEntry(level LogLevel, message string, fields []Field, ov *en
 
 	fields = l.withStacktrace(level, fields)
 	var at time.Time
+	var noTime bool
 	var caller *Caller
 	if ov != nil {
-		at, caller = ov.time, ov.caller
+		at, noTime, caller = ov.time, ov.noTime, ov.caller
 	}
 	if caller == nil {
 		caller = l.resolveCallerForEntry()
 	}
-	l.logEntrySync(level, message, fields, caller, at)
+	l.logEntrySync(level, message, fields, caller, at, noTime)
 }
 
 // withStacktrace appends the caller's stack for error-level entries when
@@ -1551,7 +1562,7 @@ func (l *Logger) resolveCallerForEntry() *Caller {
 	return &Caller{File: file, Line: line}
 }
 
-func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, caller *Caller, at time.Time) {
+func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, caller *Caller, at time.Time, noTime bool) {
 	eh := l.encoder.Load()
 	if eh == nil || eh.e == nil {
 		return
@@ -1594,7 +1605,7 @@ func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, ca
 		Time:    at,
 		codecs:  l.codecs.Load(),
 	}
-	if entry.Time.IsZero() {
+	if entry.Time.IsZero() && !noTime {
 		entry.Time = l.now()
 	}
 	if caller != nil {
@@ -1693,11 +1704,26 @@ func (l *Logger) Close() error {
 // file and line somewhere unrelated to the call site. Each PC's own result is
 // cacheable (its inline chain is fixed), so the walk stays cheap.
 func resolveCaller(extraSkip int) (string, int) {
-	const depth = 16
-	var pcs [depth]uintptr
-	n := runtime.Callers(2+extraSkip, pcs[:])
+	// Ask for a few frames first and only go deeper if they were all ours.
+	// runtime.Callers unwinds every frame requested, and unwinding dominates
+	// the cost of caller reporting, so requesting a fixed large depth made
+	// every entry pay for frames it never looked at. The answer is three or
+	// four frames up for a direct call.
+	var shallow [6]uintptr
+	if file, line, ok := walkCallers(shallow[:], extraSkip); ok {
+		return file, line
+	}
+	var deep [32]uintptr
+	if file, line, ok := walkCallers(deep[:], extraSkip); ok {
+		return file, line
+	}
+	return "unknown", 0
+}
+
+func walkCallers(pcs []uintptr, extraSkip int) (string, int, bool) {
+	n := runtime.Callers(2+extraSkip, pcs)
 	if n == 0 {
-		return "unknown", 0
+		return "", 0, false
 	}
 	for _, pc := range pcs[:n] {
 		if pc == 0 {
@@ -1708,7 +1734,7 @@ func resolveCaller(extraSkip int) (string, int) {
 			if ce.skip {
 				continue
 			}
-			return ce.file, ce.line
+			return ce.file, ce.line, true
 		}
 
 		entry := callerEntry{skip: true}
@@ -1725,10 +1751,10 @@ func resolveCaller(extraSkip int) (string, int) {
 		}
 		callerCache.Store(pc, entry)
 		if !entry.skip {
-			return entry.file, entry.line
+			return entry.file, entry.line, true
 		}
 	}
-	return "unknown", 0
+	return "", 0, false
 }
 
 // containsControl reports whether s holds a character that would break a

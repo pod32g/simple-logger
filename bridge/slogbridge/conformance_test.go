@@ -41,21 +41,8 @@ func TestSlogHandlerConformance(t *testing.T) {
 		return out
 	}
 
-	err := slogtest.TestHandler(h, results)
-	if err == nil {
-		return
-	}
-
-	// One documented deviation: this logger always stamps an entry with a time,
-	// so a record carrying none still comes out with one. Honoring "ignore a
-	// zero Record.Time" would mean teaching the encoders to omit timestamps,
-	// which is wrong for every other caller. Every other check must pass.
-	for _, line := range strings.Split(err.Error(), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, "should ignore a zero Record.Time") {
-			continue
-		}
-		t.Errorf("slogtest: %s", line)
+	if err := slogtest.TestHandler(h, results); err != nil {
+		t.Errorf("slogtest reported:\n%v", err)
 	}
 }
 

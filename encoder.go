@@ -55,18 +55,21 @@ type TextEncoder struct {
 }
 
 func (e *TextEncoder) Encode(buf []byte, entry Entry) []byte {
-	if e.TimeLayout != "" {
-		buf = entry.Time.AppendFormat(buf, e.TimeLayout)
-	} else {
-		buf = appendTimestamp(buf, entry.Time)
+	if !entry.Time.IsZero() {
+		if e.TimeLayout != "" {
+			buf = entry.Time.AppendFormat(buf, e.TimeLayout)
+		} else {
+			buf = appendTimestamp(buf, entry.Time)
+		}
+		buf = append(buf, ' ', '-')
 	}
 	if !entry.Caller.Zero() {
-		buf = append(buf, ' ', '-', ' ')
+		buf = append(buf, ' ')
 		buf = append(buf, entry.Caller.File...)
 		buf = append(buf, ':')
 		buf = strconv.AppendInt(buf, int64(entry.Caller.Line), 10)
 	}
-	buf = append(buf, ' ', '-', ' ', '[')
+	buf = append(buf, ' ', '[')
 	color := ""
 	if e.Colorize {
 		color = levelColors[entry.Level]
@@ -90,13 +93,17 @@ type JSONEncoder struct {
 }
 
 func (e *JSONEncoder) Encode(buf []byte, entry Entry) []byte {
-	buf = append(buf, `{"timestamp":"`...)
-	if e.TimeLayout != "" {
-		buf = entry.Time.AppendFormat(buf, e.TimeLayout)
-	} else {
-		buf = entry.Time.AppendFormat(buf, time.RFC3339)
+	buf = append(buf, '{')
+	if !entry.Time.IsZero() {
+		buf = append(buf, `"timestamp":"`...)
+		if e.TimeLayout != "" {
+			buf = entry.Time.AppendFormat(buf, e.TimeLayout)
+		} else {
+			buf = entry.Time.AppendFormat(buf, time.RFC3339)
+		}
+		buf = append(buf, `",`...)
 	}
-	buf = append(buf, `","level":"`...)
+	buf = append(buf, `"level":"`...)
 	buf = appendLevel(buf, entry.Level)
 	buf = append(buf, `","message":`...)
 	buf = appendJSONStringTo(buf, entry.Message)
@@ -124,14 +131,16 @@ func (e *ConsoleEncoder) Encode(buf []byte, entry Entry) []byte {
 	if layout == "" {
 		layout = "15:04:05.000"
 	}
-	if e.NoColor {
-		buf = entry.Time.AppendFormat(buf, layout)
-	} else {
-		buf = append(buf, dimColor...)
-		buf = entry.Time.AppendFormat(buf, layout)
-		buf = append(buf, colorReset...)
+	if !entry.Time.IsZero() {
+		if e.NoColor {
+			buf = entry.Time.AppendFormat(buf, layout)
+		} else {
+			buf = append(buf, dimColor...)
+			buf = entry.Time.AppendFormat(buf, layout)
+			buf = append(buf, colorReset...)
+		}
+		buf = append(buf, ' ')
 	}
-	buf = append(buf, ' ')
 
 	name := entry.Level.String()
 	if e.NoColor {
