@@ -11,7 +11,7 @@ import (
 )
 
 func TestLevelHandlerGetAndSet(t *testing.T) {
-	logger := log.NewLogger(httptest.NewRecorder(), log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(httptest.NewRecorder()), log.WithLevel(log.INFO)))
 	h := httplog.LevelHandler(logger)
 
 	// GET reports the current level.

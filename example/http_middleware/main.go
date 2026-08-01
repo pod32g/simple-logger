@@ -37,7 +37,7 @@ func requestLogger(logger *log.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(lrw, r)
 			duration := time.Since(start)
 
-			logger.InfoFields("handled request",
+			logger.Info("handled request",
 				log.String("method", r.Method),
 				log.String("path", r.URL.Path),
 				log.Int("status", lrw.status),
@@ -54,10 +54,8 @@ func helloHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	logger := log.ApplyConfig(log.DefaultConfig())
-	logger.SetFormatter(&log.JSONFormatter{})
+	logger := log.Must(log.New(log.WithJSON()))
 	logger.SetLevel(log.INFO)
-	logger.SetIncludeStacktrace(false)
 	defer logger.Close()
 
 	h := requestLogger(logger)(http.HandlerFunc(helloHandler))

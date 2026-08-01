@@ -13,7 +13,7 @@ import (
 
 func TestHandlerForwardsRecords(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.DEBUG, &log.JSONFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG), log.WithJSON()))
 	h := slogbridge.NewHandler(logger, slog.LevelDebug)
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "hello", 0)
@@ -30,7 +30,7 @@ func TestHandlerForwardsRecords(t *testing.T) {
 
 func TestHandlerWithAttrsAndGroup(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	h := slogbridge.NewHandler(logger, slog.LevelInfo)
 	h = h.WithAttrs([]slog.Attr{slog.String("env", "prod")}).(*slogbridge.Handler)
 	h = h.WithGroup("http").(*slogbridge.Handler)

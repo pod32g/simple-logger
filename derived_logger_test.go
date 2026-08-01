@@ -11,7 +11,7 @@ import (
 
 func TestLoggerWithBindsFields(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	child := logger.With(log.String("request_id", "r1"))
 
 	child.Info("handling")
@@ -30,7 +30,7 @@ func TestLoggerWithBindsFields(t *testing.T) {
 
 func TestLoggerWithChains(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	l2 := logger.With(log.String("a", "1"))
 	l3 := l2.With(log.String("b", "2"))
 
@@ -49,7 +49,7 @@ func TestLoggerWithChains(t *testing.T) {
 
 func TestLoggerWithEmptyReturnsSame(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	if logger.With() != logger {
 		t.Fatal("With() with no fields should return the same logger")
 	}
@@ -59,7 +59,7 @@ func TestLoggerWithEmptyReturnsSame(t *testing.T) {
 // mutable state: level, output, and hooks.
 func TestLoggerWithSharesCore(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	child := logger.With(log.String("c", "x"))
 
 	// Level change on the parent is observed by the child.
@@ -84,7 +84,7 @@ func TestLoggerWithSharesCore(t *testing.T) {
 
 func TestLoggerWithBoundFieldsPrecedeCallFields(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON()))
 	child := logger.With(log.String("bound", "b"))
 
 	ctx := log.WithFields(context.Background(), log.String("ctx", "c"))
@@ -102,12 +102,11 @@ func TestLoggerWithBoundFieldsPrecedeCallFields(t *testing.T) {
 
 func TestLoggerWithWorksInAsyncMode(t *testing.T) {
 	var buf lockedBuffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 8})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithAsyncQueue(8)))
 	child := logger.With(log.String("svc", "api"))
 
 	child.Info("async bound")
-	logger.DisableAsync() // flush via the shared async state
+	logger.Close() // flush via the shared async state
 
 	out := buf.String()
 	if !strings.Contains(out, "async bound") || !strings.Contains(out, "svc=api") {
@@ -117,7 +116,7 @@ func TestLoggerWithWorksInAsyncMode(t *testing.T) {
 
 func TestLoggerLevelAndEnabled(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 
 	if logger.Level() != log.INFO {
 		t.Fatalf("expected Level()=INFO, got %v", logger.Level())

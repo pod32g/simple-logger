@@ -33,13 +33,14 @@ var (
 	}
 )
 
-// DropStrategy defines behavior when the async queue is full.
-type DropStrategy int
+// dropStrategy defines behavior when the async queue is full. It is internal:
+// callers choose it through WithAsyncDropOldest / WithAsyncBlocking.
+type dropStrategy int
 
 const (
-	DropNew DropStrategy = iota
-	DropOldest
-	BlockWhenFull
+	dropNew dropStrategy = iota
+	dropOldest
+	blockWhenFull
 )
 
 // AsyncStats reports async queue usage.
@@ -365,22 +366,12 @@ func (l *levelSampler) Allow(level LogLevel, message string, fields []Field) boo
 	return true
 }
 
-// AsyncOptions configure the asynchronous logging mode.
-type AsyncOptions struct {
-	QueueSize     int
-	DropStrategy  DropStrategy
-	BatchSize     int
-	FlushInterval time.Duration
-}
-
 type logRequest struct {
-	level      LogLevel
-	message    string
-	hasMessage bool
-	fields     []Field
-	args       []interface{}
-	caller     *Caller       // call site resolved by the producer, nil to resolve at format time
-	flush      chan struct{} // non-nil marks a Flush barrier rather than an entry
+	level   LogLevel
+	message string
+	fields  []Field
+	caller  *Caller       // call site resolved by the producer, nil to resolve at format time
+	flush   chan struct{} // non-nil marks a Flush barrier rather than an entry
 }
 
 // Caller is a resolved source location.
@@ -592,15 +583,6 @@ func cloneFields(fields []Field) []Field {
 	return cloned
 }
 
-func cloneArgs(args []interface{}) []interface{} {
-	if len(args) == 0 {
-		return nil
-	}
-	cloned := make([]interface{}, len(args))
-	copy(cloned, args)
-	return cloned
-}
-
 // WithField returns a new context with the provided field appended.
 func WithField(ctx context.Context, field Field) context.Context {
 	return WithFields(ctx, field)
@@ -738,11 +720,6 @@ type WriterFormatter interface {
 	FormatTo(level LogLevel, message string, w io.Writer)
 }
 
-// ArgsFormatter allows formatting log arguments directly without building an intermediate string
-type ArgsFormatter interface {
-	FormatArgs(level LogLevel, w io.Writer, v ...interface{})
-}
-
 // Logger represents a logging instance
 type writerHolder struct {
 	w io.Writer
@@ -788,6 +765,7 @@ type loggerCore struct {
 	syncWrites        atomic.Bool
 	extractor         atomic.Pointer[extractorHolder]
 	includeStacktrace atomic.Bool
+	callerSkip        atomic.Int32
 
 	redactor        atomic.Pointer[redactorHolder]
 	errHandler      atomic.Pointer[errHandlerHolder]
@@ -805,34 +783,13 @@ type loggerCore struct {
 }
 
 // asyncState is the immutable-per-generation async configuration. A new value is
-// created by EnableAsync and retired by disableAsyncLocked; only DropStrategy is
+// created by enableAsync and retired by disableAsyncLocked; only dropStrategy is
 // mutable at runtime (via SetDropStrategy) and is therefore stored atomically.
 type asyncState struct {
 	ch            chan logRequest
-	strategy      atomic.Int32 // DropStrategy
+	strategy      atomic.Int32 // dropStrategy
 	batchSize     int
 	flushInterval time.Duration
-}
-
-// NewLogger creates a new Logger instance. A nil output is replaced with
-// io.Discard. It panics if formatter is nil, since a logger cannot format
-// without one.
-func NewLogger(output io.Writer, level LogLevel, formatter Formatter) *Logger {
-	if formatter == nil {
-		panic("logger: formatter cannot be nil")
-	}
-	if output == nil {
-		output = io.Discard
-	}
-	logger := &Logger{loggerCore: &loggerCore{}}
-	logger.level.Store(int32(level))
-	logger.output.Store(&writerHolder{w: output})
-	logger.formatter.Store(&formatterHolder{f: formatter})
-	logger.syncWrites.Store(true)
-	logger.extractor.Store(&extractorHolder{fn: defaultContextExtractor})
-	logger.sampler.Store((*samplerHolder)(nil))
-	logger.includeStacktrace.Store(false)
-	return logger
 }
 
 var defaultLogger atomic.Pointer[Logger]
@@ -847,7 +804,7 @@ func Default() *Logger {
 	if l := defaultLogger.Load(); l != nil {
 		return l
 	}
-	l := NewLogger(os.Stdout, INFO, &DefaultFormatter{})
+	l, _ := New()
 	if defaultLogger.CompareAndSwap(nil, l) {
 		return l
 	}
@@ -866,9 +823,9 @@ func (l *Logger) SetOutput(output io.Writer) {
 	l.SetOutputWithCloser(output, nil)
 }
 
-// SetOutputWithCloser changes the output and associates a closer that will be
-// invoked when the logger closes or when a subsequent SetOutput* call replaces
-// the writer.
+// SetOutputWithCloser changes the output and hands the logger ownership of the
+// closer, which it invokes on Close or when a later SetOutput* call replaces the
+// writer. Use SetOutput when the caller keeps ownership.
 func (l *Logger) SetOutputWithCloser(output io.Writer, closer io.Closer) {
 	if output == nil {
 		output = io.Discard
@@ -885,18 +842,6 @@ func (l *Logger) SetOutputWithCloser(output io.Writer, closer io.Closer) {
 	l.closer = closer
 }
 
-// SetOutputs configures the logger to write to multiple destinations.
-func (l *Logger) SetOutputs(writers ...io.Writer) {
-	switch len(writers) {
-	case 0:
-		l.SetOutput(io.Discard)
-	case 1:
-		l.SetOutput(writers[0])
-	default:
-		l.SetOutput(io.MultiWriter(writers...))
-	}
-}
-
 // SetLevel changes the logging level
 func (l *Logger) SetLevel(level LogLevel) {
 	l.level.Store(int32(level))
@@ -911,7 +856,7 @@ func (l *Logger) Level() LogLevel {
 // to guard expensive field construction on hot paths:
 //
 //	if logger.Enabled(log.DEBUG) {
-//		logger.DebugFields("state", expensiveFields()...)
+//		logger.Debug("state", expensiveFields()...)
 //	}
 func (l *Logger) Enabled(level LogLevel) bool {
 	return level >= LogLevel(l.level.Load())
@@ -919,7 +864,7 @@ func (l *Logger) Enabled(level LogLevel) bool {
 
 // With returns a derived logger that prepends the given fields to every entry it
 // emits. The derived logger shares the parent's output, level, hooks, and async
-// state, so runtime changes (SetLevel, SetOutput, AddHook, EnableAsync, ...)
+// state, so runtime changes (SetLevel, SetOutput, addHook, enableAsync, ...)
 // made through any logger in the family are observed by all of them. Bound
 // fields appear ahead of per-call and context-extracted fields.
 func (l *Logger) With(fields ...Field) *Logger {
@@ -967,7 +912,7 @@ func (l *Logger) Named(name string) *Logger {
 // or handler boundaries: defer logger.Recover().
 func (l *Logger) Recover() {
 	if r := recover(); r != nil {
-		l.ErrorFields("recovered panic", Any("panic", r), String("stacktrace", string(debug.Stack())))
+		l.Error("recovered panic", Any("panic", r), String("stacktrace", string(debug.Stack())))
 		panic(r)
 	}
 }
@@ -977,21 +922,21 @@ func (l *Logger) Recover() {
 // goroutines that should survive a single bad task.
 func (l *Logger) RecoverAndContinue() {
 	if r := recover(); r != nil {
-		l.ErrorFields("recovered panic", Any("panic", r), String("stacktrace", string(debug.Stack())))
+		l.Error("recovered panic", Any("panic", r), String("stacktrace", string(debug.Stack())))
 	}
 }
 
-// SetFormatter allows changing the log message format. It panics if formatter
+// setFormatter allows changing the log message format. It panics if formatter
 // is nil.
-func (l *Logger) SetFormatter(formatter Formatter) {
+func (l *Logger) setFormatter(formatter Formatter) {
 	if formatter == nil {
 		panic("logger: formatter cannot be nil")
 	}
 	l.formatter.Store(&formatterHolder{f: formatter})
 }
 
-// SetContextExtractor configures how context.Context values are converted into fields.
-func (l *Logger) SetContextExtractor(fn ContextExtractorFunc) {
+// setContextExtractor configures how context.Context values are converted into fields.
+func (l *Logger) setContextExtractor(fn ContextExtractorFunc) {
 	if fn == nil {
 		l.extractor.Store((*extractorHolder)(nil))
 		return
@@ -999,8 +944,8 @@ func (l *Logger) SetContextExtractor(fn ContextExtractorFunc) {
 	l.extractor.Store(&extractorHolder{fn: fn})
 }
 
-// SetSampler installs a sampler that can drop log entries before formatting.
-func (l *Logger) SetSampler(fn Sampler) {
+// setSampler installs a sampler that can drop log entries before formatting.
+func (l *Logger) setSampler(fn Sampler) {
 	if fn == nil {
 		l.sampler.Store((*samplerHolder)(nil))
 		return
@@ -1008,15 +953,15 @@ func (l *Logger) SetSampler(fn Sampler) {
 	l.sampler.Store(&samplerHolder{fn: fn})
 }
 
-// SetIncludeStacktrace toggles automatic stacktrace capture for error/fatal logs.
-func (l *Logger) SetIncludeStacktrace(enabled bool) {
+// setIncludeStacktrace toggles automatic stacktrace capture for error/fatal logs.
+func (l *Logger) setIncludeStacktrace(enabled bool) {
 	l.includeStacktrace.Store(enabled)
 }
 
-// SetRedactor installs a Redactor that masks fields (and, if it implements
+// setRedactor installs a Redactor that masks fields (and, if it implements
 // MessageRedactor, the message) before formatting and hook dispatch. Pass nil
 // to remove it. See NewKeyRedactor and NewPatternScrubber.
-func (l *Logger) SetRedactor(r Redactor) {
+func (l *Logger) setRedactor(r Redactor) {
 	if r == nil {
 		l.redactor.Store((*redactorHolder)(nil))
 		return
@@ -1024,29 +969,29 @@ func (l *Logger) SetRedactor(r Redactor) {
 	l.redactor.Store(&redactorHolder{r: r})
 }
 
-// SetDeduplicateFields enables last-wins de-duplication of fields sharing a key
+// setDeduplicateFields enables last-wins de-duplication of fields sharing a key
 // (e.g. a context field overridden at the call site) before rendering. It adds
 // a small per-entry cost, so it is off by default.
-func (l *Logger) SetDeduplicateFields(enabled bool) {
+func (l *Logger) setDeduplicateFields(enabled bool) {
 	l.dedupeFields.Store(enabled)
 }
 
-// SetMaxFieldBytes caps the length of string field values; longer values are
+// setMaxFieldBytes caps the length of string field values; longer values are
 // truncated with a "...[+N bytes]" marker. Zero (the default) means unlimited.
-func (l *Logger) SetMaxFieldBytes(n int) {
+func (l *Logger) setMaxFieldBytes(n int) {
 	l.maxFieldBytes.Store(int64(n))
 }
 
-// SetMaxMessageBytes caps the length of the rendered message; longer messages
+// setMaxMessageBytes caps the length of the rendered message; longer messages
 // are truncated with a "...[+N bytes]" marker. Zero (the default) means unlimited.
-func (l *Logger) SetMaxMessageBytes(n int) {
+func (l *Logger) setMaxMessageBytes(n int) {
 	l.maxMessageBytes.Store(int64(n))
 }
 
-// SetErrorHandler registers a callback invoked when a write to the output sink
+// setErrorHandler registers a callback invoked when a write to the output sink
 // returns an error. Without one, sink write failures are counted (WriteErrors)
 // but otherwise silent. Pass nil to remove it.
-func (l *Logger) SetErrorHandler(fn func(error)) {
+func (l *Logger) setErrorHandler(fn func(error)) {
 	if fn == nil {
 		l.errHandler.Store((*errHandlerHolder)(nil))
 		return
@@ -1064,12 +1009,12 @@ type levelOutput struct {
 	w   io.Writer
 }
 
-// AddLevelOutput registers an additional writer that receives the same formatted
+// addLevelOutput registers an additional writer that receives the same formatted
 // entries as the primary output, but only for entries at or above minLevel. For
-// example, AddLevelOutput(ERROR, alertSink) mirrors errors and fatals to an
+// example, addLevelOutput(ERROR, alertSink) mirrors errors and fatals to an
 // alerting sink while the primary output keeps everything. Outputs added here are
 // not closed by Close; manage their lifecycle yourself.
-func (l *Logger) AddLevelOutput(minLevel LogLevel, w io.Writer) {
+func (l *Logger) addLevelOutput(minLevel LogLevel, w io.Writer) {
 	if w == nil {
 		return
 	}
@@ -1086,8 +1031,8 @@ func (l *Logger) AddLevelOutput(minLevel LogLevel, w io.Writer) {
 	}
 }
 
-// ClearLevelOutputs removes all writers registered with AddLevelOutput.
-func (l *Logger) ClearLevelOutputs() {
+// clearLevelOutputs removes all writers registered with addLevelOutput.
+func (l *Logger) clearLevelOutputs() {
 	l.levelOutputs.Store(nil)
 }
 
@@ -1129,19 +1074,19 @@ func (l *Logger) reportWriteError(err error) {
 	}
 }
 
-// EnableAsync activates asynchronous logging with the provided options.
-func (l *Logger) EnableAsync(opts AsyncOptions) {
-	if opts.QueueSize <= 0 {
-		opts.QueueSize = 1024
+// enableAsync activates asynchronous logging with the provided options.
+func (l *Logger) enableAsync(opts asyncConfig) {
+	if opts.queueSize <= 0 {
+		opts.queueSize = 1024
 	}
-	if opts.DropStrategy != DropNew && opts.DropStrategy != DropOldest && opts.DropStrategy != BlockWhenFull {
-		opts.DropStrategy = DropNew
+	if opts.strategy != dropNew && opts.strategy != dropOldest && opts.strategy != blockWhenFull {
+		opts.strategy = dropNew
 	}
-	if opts.BatchSize <= 0 {
-		opts.BatchSize = 1
+	if opts.batchSize <= 0 {
+		opts.batchSize = 1
 	}
-	if opts.FlushInterval < 0 {
-		opts.FlushInterval = 0
+	if opts.flushInterval < 0 {
+		opts.flushInterval = 0
 	}
 
 	l.asyncMu.Lock()
@@ -1149,29 +1094,18 @@ func (l *Logger) EnableAsync(opts AsyncOptions) {
 	l.disableAsyncLocked()
 
 	st := &asyncState{
-		ch:            make(chan logRequest, opts.QueueSize),
-		batchSize:     opts.BatchSize,
-		flushInterval: opts.FlushInterval,
+		ch:            make(chan logRequest, opts.queueSize),
+		batchSize:     opts.batchSize,
+		flushInterval: opts.flushInterval,
 	}
-	st.strategy.Store(int32(opts.DropStrategy))
+	st.strategy.Store(int32(opts.strategy))
 	l.async.Store(st)
 	l.asyncWG.Add(1)
 	go l.asyncWorker(st)
 }
 
-// SetDropStrategy changes the behavior when the async queue is full. It takes
-// effect immediately on the active async logger; it is a no-op when async
-// logging is disabled.
-func (l *Logger) SetDropStrategy(strategy DropStrategy) {
-	l.asyncMu.Lock()
-	defer l.asyncMu.Unlock()
-	if st := l.async.Load(); st != nil {
-		st.strategy.Store(int32(strategy))
-	}
-}
-
-// DisableAsync stops asynchronous logging and flushes pending entries.
-func (l *Logger) DisableAsync() {
+// disableAsync stops asynchronous logging and flushes pending entries.
+func (l *Logger) disableAsync() {
 	l.asyncMu.Lock()
 	l.disableAsyncLocked()
 	l.asyncMu.Unlock()
@@ -1240,7 +1174,7 @@ func (l *Logger) asyncWorker(st *asyncState) {
 				close(req.flush)
 				continue
 			}
-			l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args, req.caller)
+			l.logEntrySync(req.level, req.message, req.fields, req.caller)
 		}
 		return
 	}
@@ -1284,7 +1218,7 @@ func (l *Logger) asyncWorker(st *asyncState) {
 
 	flush := func() {
 		for _, req := range batch {
-			l.logEntrySync(req.level, req.message, req.hasMessage, req.fields, req.args, req.caller)
+			l.logEntrySync(req.level, req.message, req.fields, req.caller)
 		}
 		batch = batch[:0]
 		if flushInterval > 0 {
@@ -1356,7 +1290,10 @@ func (l *Logger) hooksSnapshot() []hookRegistration {
 	return snapshot
 }
 
-// AddHook registers a hook that will be fired for every emitted log entry.
+// AddHook registers a hook fired for every emitted entry. Hooks are usually
+// supplied with WithHook at construction; this exists because attaching one
+// later is a real pattern -- an exporter that is only wired up once its own
+// configuration has loaded, for instance.
 func (l *Logger) AddHook(h Hook, opts ...HookOption) {
 	if h == nil {
 		return
@@ -1370,22 +1307,17 @@ func (l *Logger) AddHook(h Hook, opts ...HookOption) {
 	l.hooksMu.Unlock()
 }
 
-// ClearHooks removes all registered hooks.
-func (l *Logger) ClearHooks() {
+// clearHooks removes all registered hooks.
+func (l *Logger) clearHooks() {
 	l.hooksMu.Lock()
 	l.hooks = nil
 	l.hooksMu.Unlock()
 }
 
-// SetSynchronized toggles serialized writes. When disabled, callers must ensure the
+// setSynchronized toggles serialized writes. When disabled, callers must ensure the
 // writer they provide is safe for concurrent use.
-func (l *Logger) SetSynchronized(enabled bool) {
+func (l *Logger) setSynchronized(enabled bool) {
 	l.syncWrites.Store(enabled)
-}
-
-// Synchronized reports whether the logger currently serializes writes.
-func (l *Logger) Synchronized() bool {
-	return l.syncWrites.Load()
 }
 
 func (l *Logger) contextFields(ctx context.Context) []Field {
@@ -1604,32 +1536,6 @@ func (f *DefaultFormatter) FormatWithFieldsTo(level LogLevel, message string, fi
 	})
 }
 
-// FormatArgs implements ArgsFormatter for DefaultFormatter to avoid intermediate string allocations
-func (f *DefaultFormatter) FormatArgs(level LogLevel, w io.Writer, v ...interface{}) {
-	f.writeFrame(level, w, nil, func(writer io.Writer) {
-		for i, val := range v {
-			if i > 0 {
-				writer.Write([]byte{' '})
-			}
-			writeFieldValueText(writer, val)
-		}
-	})
-}
-
-func (f *DefaultFormatter) FormatArgsWithFields(level LogLevel, fields []Field, w io.Writer, v ...interface{}) {
-	f.writeFrame(level, w, nil, func(writer io.Writer) {
-		wrote := false
-		for i, val := range v {
-			if i > 0 {
-				writer.Write([]byte{' '})
-			}
-			writeFieldValueText(writer, val)
-			wrote = true
-		}
-		writeFieldsText(writer, fields, wrote)
-	})
-}
-
 // JSONFormatter formats log messages as JSON
 // JSONFormatter formats log messages as JSON. The IncludeCaller flag controls
 // whether caller information is included in the output.
@@ -1707,17 +1613,6 @@ func (f *JSONFormatter) FormatTo(level LogLevel, message string, w io.Writer) {
 	bufferPool.Put(buf)
 }
 
-// FormatArgs implements ArgsFormatter for JSONFormatter. It joins the arguments
-// into a message before delegating to FormatTo.
-func (f *JSONFormatter) FormatArgs(level LogLevel, w io.Writer, v ...interface{}) {
-	msg := buildMessage(v...)
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	f.formatBuffer(level, msg, nil, nil, buf)
-	buf.WriteTo(w)
-	bufferPool.Put(buf)
-}
-
 func (f *JSONFormatter) FormatWithFields(level LogLevel, message string, fields []Field) string {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -1735,21 +1630,7 @@ func (f *JSONFormatter) FormatWithFieldsTo(level LogLevel, message string, field
 	bufferPool.Put(buf)
 }
 
-func (f *JSONFormatter) FormatArgsWithFields(level LogLevel, fields []Field, w io.Writer, v ...interface{}) {
-	msg := buildMessage(v...)
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	f.formatBuffer(level, msg, fields, nil, buf)
-	buf.WriteTo(w)
-	bufferPool.Put(buf)
-}
-
-// log logs a message using the current formatter
-func (l *Logger) log(level LogLevel, v ...interface{}) {
-	l.logEntry(level, "", false, nil, v)
-}
-
-func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, fields []Field, args []interface{}) {
+func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, fields []Field, _ []Field) {
 	if level < LogLevel(l.level.Load()) {
 		return
 	}
@@ -1769,11 +1650,7 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 	// fires before logEntry returns.
 	if level != FATAL {
 		if holder := l.sampler.Load(); holder != nil && holder.fn != nil {
-			effective := message
-			if !hasMessage && len(args) > 0 {
-				effective = buildMessage(args...)
-			}
-			if !holder.fn.Allow(level, effective, fields) {
+			if !holder.fn.Allow(level, message, fields) {
 				return
 			}
 		}
@@ -1784,19 +1661,15 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 			// the worker instead.
 			fields = l.withStacktrace(level, fields)
 			req := logRequest{
-				level:      level,
-				message:    message,
-				hasMessage: hasMessage,
-				fields:     cloneFields(fields),
-				caller:     l.resolveCallerForFormatter(),
-			}
-			if len(args) > 0 {
-				req.args = cloneArgs(args)
+				level:   level,
+				message: message,
+				fields:  cloneFields(fields),
+				caller:  l.resolveCallerForFormatter(),
 			}
 			if l.enqueueAsync(req) {
 				return
 			}
-			l.logEntrySync(level, message, hasMessage, fields, args, req.caller)
+			l.logEntrySync(level, message, fields, req.caller)
 			return
 		}
 	} else if l.async.Load() != nil {
@@ -1806,7 +1679,7 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 	}
 
 	fields = l.withStacktrace(level, fields)
-	l.logEntrySync(level, message, hasMessage, fields, args, nil)
+	l.logEntrySync(level, message, fields, nil)
 }
 
 // withStacktrace appends the caller's stack for error-level entries when
@@ -1838,11 +1711,11 @@ func (l *Logger) resolveCallerForFormatter() *Caller {
 	if !ok || !caf.IncludeCallerInfo() {
 		return nil
 	}
-	file, line := resolveCaller(0)
+	file, line := resolveCaller(int(l.callerSkip.Load()))
 	return &Caller{File: file, Line: line}
 }
 
-func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, fields []Field, args []interface{}, caller *Caller) {
+func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, caller *Caller) {
 	fh := l.formatter.Load()
 	if fh == nil || fh.f == nil {
 		return
@@ -1901,26 +1774,7 @@ func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, f
 		}
 	}
 
-	// The args fast path cannot carry a pre-resolved call site, so it is skipped
-	// when one was captured (async mode with a caller-rendering formatter).
-	if caller == nil && len(fields) == 0 && len(args) > 0 {
-		if af, ok := formatter.(ArgsFormatter); ok {
-			write(func(w io.Writer) {
-				af.FormatArgs(level, w, args...)
-			})
-			return
-		}
-	}
-
-	resolvedMessage := message
-	if !hasMessage {
-		if len(args) > 0 {
-			resolvedMessage = buildMessage(args...)
-		} else {
-			resolvedMessage = ""
-		}
-	}
-	resolvedMessage = l.redactMessage(resolvedMessage)
+	resolvedMessage := l.redactMessage(message)
 
 	if len(hooks) > 0 {
 		for _, reg := range hooks {
@@ -1992,11 +1846,11 @@ func (l *Logger) logEntrySync(level LogLevel, message string, hasMessage bool, f
 }
 
 // Close releases any resources owned by the logger, such as open files. Writers
-// superseded by a later SetOutputWithCloser are closed at the point they are
+// superseded by a later setOutputWithCloser are closed at the point they are
 // replaced, so only the current one is left to close here. The close error, if
 // any, is returned.
 func (l *Logger) Close() error {
-	l.DisableAsync()
+	l.disableAsync()
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	var firstErr error
@@ -2054,32 +1908,6 @@ func resolveCaller(extraSkip int) (string, int) {
 		}
 	}
 	return "unknown", 0
-}
-
-func buildMessage(v ...interface{}) string {
-	if len(v) == 1 {
-		switch t := v[0].(type) {
-		case string:
-			return t
-		case int:
-			return strconv.Itoa(t)
-		case fmt.Stringer:
-			return t.String()
-		default:
-			return fmt.Sprint(t)
-		}
-	}
-	b := builderPool.Get().(*strings.Builder)
-	b.Reset()
-	for i, val := range v {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		writeValue(b, val)
-	}
-	s := b.String()
-	builderPool.Put(b)
-	return s
 }
 
 func appendFieldsToMessage(message string, fields []Field) string {
@@ -2298,19 +2126,6 @@ func appendJSONValue(buf *bytes.Buffer, val interface{}) {
 	appendJSONString(buf, fmt.Sprint(val))
 }
 
-func writeValue(b *strings.Builder, val interface{}) {
-	switch t := val.(type) {
-	case string:
-		b.WriteString(t)
-	case int:
-		b.WriteString(strconv.Itoa(t))
-	case fmt.Stringer:
-		b.WriteString(t.String())
-	default:
-		fmt.Fprint(b, val)
-	}
-}
-
 // logf formats and logs a message, but only once the level has been checked --
 // the point of the *f methods over Info(fmt.Sprintf(...)), which formats whether
 // or not the entry survives.
@@ -2321,161 +2136,82 @@ func (l *Logger) logf(level LogLevel, format string, args ...interface{}) {
 	l.logEntry(level, fmt.Sprintf(format, args...), true, nil, nil)
 }
 
-// Debugf logs a formatted debug message. The message is only formatted if DEBUG
-// is enabled.
+// Debug logs a message at DEBUG with optional structured fields.
+func (l *Logger) Debug(message string, fields ...Field) {
+	l.logEntry(DEBUG, message, true, fields, nil)
+}
+
+// Debugf logs a formatted message at DEBUG. The message is formatted only
+// if DEBUG is enabled.
 func (l *Logger) Debugf(format string, args ...interface{}) {
 	l.logf(DEBUG, format, args...)
 }
 
-// Infof logs a formatted info message. The message is only formatted if INFO is
-// enabled.
-func (l *Logger) Infof(format string, args ...interface{}) {
-	l.logf(INFO, format, args...)
-}
-
-// Warnf logs a formatted warning. The message is only formatted if WARN is
-// enabled.
-func (l *Logger) Warnf(format string, args ...interface{}) {
-	l.logf(WARN, format, args...)
-}
-
-// Errorf logs a formatted error. The message is only formatted if ERROR is
-// enabled.
-func (l *Logger) Errorf(format string, args ...interface{}) {
-	l.logf(ERROR, format, args...)
-}
-
-// Fatalf logs a formatted fatal message and exits the application.
-func (l *Logger) Fatalf(format string, args ...interface{}) {
-	l.logf(FATAL, format, args...)
-}
-
-// Debug logs a debug message
-func (l *Logger) Debug(v ...interface{}) {
-	l.log(DEBUG, v...)
-}
-
-// DebugString logs a preformatted debug string without variadic allocation.
-func (l *Logger) DebugString(message string) {
-	l.log(DEBUG, message)
-}
-
-// DebugFields logs a debug message with structured fields.
-func (l *Logger) DebugFields(message string, fields ...Field) {
-	l.logEntry(DEBUG, message, true, fields, nil)
-}
-
-// Debug1 logs a debug message composed of a string and one value without
-// triggering variadic allocations.
-func (l *Logger) Debug1(message string, value interface{}) {
-	l.log(DEBUG, message, value)
-}
-
-// DebugContext logs a debug message while enriching it with context-derived fields.
+// DebugContext logs at DEBUG, adding any fields the context carries.
 func (l *Logger) DebugContext(ctx context.Context, message string, fields ...Field) {
 	l.logEntry(DEBUG, message, true, l.mergeContextFields(ctx, fields), nil)
 }
 
-// Info logs an info message
-func (l *Logger) Info(v ...interface{}) {
-	l.log(INFO, v...)
-}
-
-// InfoString logs a preformatted info string without variadic allocation.
-func (l *Logger) InfoString(message string) {
-	l.log(INFO, message)
-}
-
-// Info1 logs an info message composed of a string and one value without
-// triggering variadic allocations.
-func (l *Logger) Info1(message string, value interface{}) {
-	l.log(INFO, message, value)
-}
-
-// InfoFields logs an info message with structured fields.
-func (l *Logger) InfoFields(message string, fields ...Field) {
+// Info logs a message at INFO with optional structured fields.
+func (l *Logger) Info(message string, fields ...Field) {
 	l.logEntry(INFO, message, true, fields, nil)
 }
 
-// InfoContext logs an info message and appends any fields extracted from context.
+// Infof logs a formatted message at INFO. The message is formatted only
+// if INFO is enabled.
+func (l *Logger) Infof(format string, args ...interface{}) {
+	l.logf(INFO, format, args...)
+}
+
+// InfoContext logs at INFO, adding any fields the context carries.
 func (l *Logger) InfoContext(ctx context.Context, message string, fields ...Field) {
 	l.logEntry(INFO, message, true, l.mergeContextFields(ctx, fields), nil)
 }
 
-// Warn logs a warning message
-func (l *Logger) Warn(v ...interface{}) {
-	l.log(WARN, v...)
-}
-
-// WarnString logs a preformatted warning string without variadic allocation.
-func (l *Logger) WarnString(message string) {
-	l.log(WARN, message)
-}
-
-// Warn1 logs a warning message composed of a string and one value without
-// triggering variadic allocations.
-func (l *Logger) Warn1(message string, value interface{}) {
-	l.log(WARN, message, value)
-}
-
-// WarnFields logs a warning message with structured fields.
-func (l *Logger) WarnFields(message string, fields ...Field) {
+// Warn logs a message at WARN with optional structured fields.
+func (l *Logger) Warn(message string, fields ...Field) {
 	l.logEntry(WARN, message, true, fields, nil)
 }
 
-// WarnContext logs a warning and appends context-derived fields.
+// Warnf logs a formatted message at WARN. The message is formatted only
+// if WARN is enabled.
+func (l *Logger) Warnf(format string, args ...interface{}) {
+	l.logf(WARN, format, args...)
+}
+
+// WarnContext logs at WARN, adding any fields the context carries.
 func (l *Logger) WarnContext(ctx context.Context, message string, fields ...Field) {
 	l.logEntry(WARN, message, true, l.mergeContextFields(ctx, fields), nil)
 }
 
-// Error logs an error message
-func (l *Logger) Error(v ...interface{}) {
-	l.log(ERROR, v...)
-}
-
-// ErrorString logs a preformatted error string without variadic allocation.
-func (l *Logger) ErrorString(message string) {
-	l.log(ERROR, message)
-}
-
-// Error1 logs an error message composed of a string and one value without
-// triggering variadic allocations.
-func (l *Logger) Error1(message string, value interface{}) {
-	l.log(ERROR, message, value)
-}
-
-// ErrorFields logs an error message with structured fields.
-func (l *Logger) ErrorFields(message string, fields ...Field) {
+// Error logs a message at ERROR with optional structured fields.
+func (l *Logger) Error(message string, fields ...Field) {
 	l.logEntry(ERROR, message, true, fields, nil)
 }
 
-// ErrorContext logs an error and appends context-derived fields.
+// Errorf logs a formatted message at ERROR. The message is formatted only
+// if ERROR is enabled.
+func (l *Logger) Errorf(format string, args ...interface{}) {
+	l.logf(ERROR, format, args...)
+}
+
+// ErrorContext logs at ERROR, adding any fields the context carries.
 func (l *Logger) ErrorContext(ctx context.Context, message string, fields ...Field) {
 	l.logEntry(ERROR, message, true, l.mergeContextFields(ctx, fields), nil)
 }
 
-// Fatal logs a fatal message and exits the application
-func (l *Logger) Fatal(v ...interface{}) {
-	l.log(FATAL, v...)
-}
-
-// FatalString logs a preformatted fatal string without variadic allocation.
-func (l *Logger) FatalString(message string) {
-	l.log(FATAL, message)
-}
-
-// Fatal1 logs a fatal message composed of a string and one value without
-// triggering variadic allocations.
-func (l *Logger) Fatal1(message string, value interface{}) {
-	l.log(FATAL, message, value)
-}
-
-// FatalFields logs a fatal message with structured fields and exits the application.
-func (l *Logger) FatalFields(message string, fields ...Field) {
+// Fatal logs a message at FATAL with optional structured fields and exits the application.
+func (l *Logger) Fatal(message string, fields ...Field) {
 	l.logEntry(FATAL, message, true, fields, nil)
 }
 
-// FatalContext logs a fatal message with context-derived fields and exits the application.
+// Fatalf logs a formatted message at FATAL and exits the application. The message is formatted only
+// if FATAL is enabled.
+func (l *Logger) Fatalf(format string, args ...interface{}) {
+	l.logf(FATAL, format, args...)
+}
+
+// FatalContext logs at FATAL, adding any fields the context carries and exits the application.
 func (l *Logger) FatalContext(ctx context.Context, message string, fields ...Field) {
 	l.logEntry(FATAL, message, true, l.mergeContextFields(ctx, fields), nil)
 }
@@ -2518,8 +2254,8 @@ func (l *Logger) enqueueAsync(req logRequest) bool {
 	}
 
 	ch := st.ch
-	switch DropStrategy(st.strategy.Load()) {
-	case DropOldest:
+	switch dropStrategy(st.strategy.Load()) {
+	case dropOldest:
 		select {
 		case ch <- req:
 			return true
@@ -2562,7 +2298,7 @@ func (l *Logger) enqueueAsync(req logRequest) bool {
 			}
 			return true
 		}
-	case BlockWhenFull:
+	case blockWhenFull:
 		ch <- req
 		return true
 	default:

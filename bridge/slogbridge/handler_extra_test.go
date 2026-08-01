@@ -14,7 +14,7 @@ import (
 
 func TestHandlerEnabled(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG)))
 	h := slogbridge.NewHandler(logger, slog.LevelWarn)
 
 	ctx := context.Background()
@@ -33,7 +33,7 @@ func TestHandlerEnabled(t *testing.T) {
 // slog.Logger path, which calls Enabled before constructing a record.
 func TestHandlerEnabledThroughSlog(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG)))
 	sl := slog.New(slogbridge.NewHandler(logger, slog.LevelWarn))
 
 	sl.Info("below-threshold")
@@ -53,7 +53,7 @@ func (l lazyValuer) LogValue() slog.Value { return slog.StringValue(l.v) }
 
 func TestHandlerAttrKinds(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.DEBUG, &log.JSONFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG), log.WithJSON()))
 	h := slogbridge.NewHandler(logger, slog.LevelDebug)
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "kinds", 0)
@@ -89,7 +89,7 @@ func TestHandlerLevelMapping(t *testing.T) {
 	}
 	for _, tc := range cases {
 		var buf bytes.Buffer
-		logger := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{IncludeCaller: false})
+		logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG)))
 		h := slogbridge.NewHandler(logger, slog.LevelDebug)
 		record := slog.NewRecord(time.Now(), tc.level, "m", 0)
 		if err := h.Handle(context.Background(), record); err != nil {

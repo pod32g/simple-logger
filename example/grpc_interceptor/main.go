@@ -94,17 +94,17 @@ func loggingInterceptor(logger *log.Logger) grpc.UnaryServerInterceptor {
 		}
 
 		if err != nil {
-			logger.ErrorFields("grpc call failed", append(fields, log.Error("error", err))...)
+			logger.Error("grpc call failed", append(fields, log.Error("error", err))...)
 			return resp, err
 		}
 
-		logger.InfoFields("grpc call completed", fields...)
+		logger.Info("grpc call completed", fields...)
 		return resp, nil
 	}
 }
 
 func main() {
-	logger := log.ApplyConfig(log.DefaultConfig())
+	logger := log.Must(log.FromConfig(log.DefaultConfig()))
 	logger.SetFormatter(&log.JSONFormatter{})
 	defer logger.Close()
 
@@ -115,7 +115,7 @@ func main() {
 
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
-		logger.FatalFields("failed to listen", log.Error("error", err))
+		logger.Fatal("failed to listen", log.Error("error", err))
 	}
 
 	go func() {
@@ -134,7 +134,7 @@ func main() {
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(jsonCodec{})),
 	)
 	if err != nil {
-		logger.FatalFields("dial failed", log.Error("error", err))
+		logger.Fatal("dial failed", log.Error("error", err))
 	}
 	defer conn.Close()
 

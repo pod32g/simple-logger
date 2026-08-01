@@ -50,17 +50,17 @@ func (h *Handler) Handle(_ context.Context, record slog.Record) error {
 	msg := record.Message
 	switch levelToLogLevel(record.Level) {
 	case log.DEBUG:
-		h.logger.DebugFields(msg, fields...)
+		h.logger.Debug(msg, fields...)
 	case log.INFO:
-		h.logger.InfoFields(msg, fields...)
+		h.logger.Info(msg, fields...)
 	case log.WARN:
-		h.logger.WarnFields(msg, fields...)
+		h.logger.Warn(msg, fields...)
 	case log.ERROR:
-		h.logger.ErrorFields(msg, fields...)
+		h.logger.Error(msg, fields...)
 	case log.FATAL:
-		h.logger.FatalFields(msg, fields...)
+		h.logger.Fatal(msg, fields...)
 	default:
-		h.logger.InfoFields(msg, fields...)
+		h.logger.Info(msg, fields...)
 	}
 	return nil
 }

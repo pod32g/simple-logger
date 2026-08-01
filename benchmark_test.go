@@ -9,16 +9,16 @@ import (
 )
 
 func BenchmarkLoggerDefault(b *testing.B) {
-	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{IncludeCaller: true})
+	logger := log.Must(log.New(log.WithOutput(io.Discard), log.WithLevel(log.INFO), log.WithCaller()))
 	for i := 0; i < b.N; i++ {
-		logger.Info("benchmark message", i)
+		logger.Info("benchmark message", log.Int("i", i))
 	}
 }
 
 func BenchmarkLoggerNoCaller(b *testing.B) {
-	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(io.Discard), log.WithLevel(log.INFO)))
 	for i := 0; i < b.N; i++ {
-		logger.Info("benchmark message", i)
+		logger.Info("benchmark message", log.Int("i", i))
 	}
 }
 

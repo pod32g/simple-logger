@@ -20,13 +20,13 @@ func TestConfigReloadEndToEnd(t *testing.T) {
 
 	cfg := log.DefaultConfig()
 	cfg.Output = logPath
-	cfg.Format = "text"
+	cfg.Format = log.FormatText
 	cfg.Level = log.INFO
-	cfg.SyncWrites = true
+	cfg.Unsynchronized = false
 
 	writeConfig(t, configPath, cfg)
 
-	logger := log.ApplyConfig(cfg)
+	logger := log.Must(log.FromConfig(cfg))
 	defer logger.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -34,12 +34,14 @@ func TestConfigReloadEndToEnd(t *testing.T) {
 
 	errCh := make(chan error, 8)
 	go func() {
-		err := log.WatchConfigFileForLogger(ctx, logger, configPath, 20*time.Millisecond, func(err error) {
-			select {
-			case errCh <- err:
-			default:
-			}
-		})
+		err := logger.Watch(ctx, configPath,
+			log.WatchInterval(20*time.Millisecond),
+			log.WatchErrorHandler(func(err error) {
+				select {
+				case errCh <- err:
+				default:
+				}
+			}))
 		if err != nil {
 			select {
 			case errCh <- err:
@@ -56,14 +58,14 @@ func TestConfigReloadEndToEnd(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	cfg.Format = "json"
+	cfg.Format = log.FormatJSON
 	cfg.Level = log.DEBUG
 	writeConfig(t, configPath, cfg)
 
 	deadline := time.Now().Add(4 * time.Second)
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
-		logger.DebugFields("reload-debug", log.String("attempt", fmt.Sprintf("%d", attempt)))
-		logger.InfoFields("reload-info", log.String("attempt", fmt.Sprintf("%d", attempt)))
+		logger.Debug("reload-debug", log.String("attempt", fmt.Sprintf("%d", attempt)))
+		logger.Info("reload-info", log.String("attempt", fmt.Sprintf("%d", attempt)))
 		if err := hasJSONEntry(logPath, "reload-info", "INFO"); err == nil {
 			cancel()
 			time.Sleep(20 * time.Millisecond)
@@ -97,27 +99,27 @@ func TestChannelReloadEndToEnd(t *testing.T) {
 
 	cfg := log.DefaultConfig()
 	cfg.Output = logPath
-	cfg.Format = "text"
+	cfg.Format = log.FormatText
 	cfg.Level = log.INFO
-	cfg.SyncWrites = true
+	cfg.Unsynchronized = false
 
-	logger := log.ApplyConfig(cfg)
+	logger := log.Must(log.FromConfig(cfg))
 	defer logger.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	updates := make(chan log.LoggerConfig, 1)
+	updates := make(chan log.Config, 1)
 	errCh := make(chan error, 4)
 
 	done := make(chan struct{})
 	go func() {
-		log.ReloadLoggerFromChannel(ctx, logger, updates, func(err error) {
+		logger.ReloadFrom(ctx, updates, log.WatchErrorHandler(func(err error) {
 			select {
 			case errCh <- err:
 			default:
 			}
-		})
+		}))
 		close(done)
 	}()
 
@@ -127,7 +129,7 @@ func TestChannelReloadEndToEnd(t *testing.T) {
 	}
 
 	newCfg := cfg
-	newCfg.Format = "json"
+	newCfg.Format = log.FormatJSON
 	newCfg.Level = log.DEBUG
 
 	updates <- newCfg
@@ -135,7 +137,7 @@ func TestChannelReloadEndToEnd(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	success := false
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
-		logger.InfoFields("channel-info", log.Int("attempt", attempt))
+		logger.Info("channel-info", log.Int("attempt", attempt))
 		if err := hasJSONEntry(logPath, "channel-info", "INFO"); err == nil {
 			success = true
 			break
@@ -172,7 +174,7 @@ func TestChannelReloadEndToEnd(t *testing.T) {
 	}
 }
 
-func writeConfig(t *testing.T, path string, cfg log.LoggerConfig) {
+func writeConfig(t *testing.T, path string, cfg log.Config) {
 	t.Helper()
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

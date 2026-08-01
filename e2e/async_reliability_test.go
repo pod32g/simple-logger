@@ -30,11 +30,10 @@ func (b *blockingWriter) Write(p []byte) (int, error) {
 
 func TestFlushBarrierSurvivesDropOldest(t *testing.T) {
 	w := &blockingWriter{release: make(chan struct{})}
-	l := log.NewLogger(w, log.INFO, &log.DefaultFormatter{})
-	l.EnableAsync(log.AsyncOptions{QueueSize: 4, DropStrategy: log.DropOldest})
-	defer l.DisableAsync()
+	l := log.Must(log.New(log.WithOutput(w), log.WithLevel(log.INFO), log.WithAsyncQueue(4), log.WithAsyncDropOldest()))
+	defer l.Close()
 
-	l.InfoString("A") // the worker picks this up and blocks inside Write
+	l.Info("A") // the worker picks this up and blocks inside Write
 	waitFor(t, func() bool { return l.AsyncStats().QueueLength == 0 })
 
 	flushed := make(chan struct{})
@@ -42,7 +41,7 @@ func TestFlushBarrierSurvivesDropOldest(t *testing.T) {
 	waitFor(t, func() bool { return l.AsyncStats().QueueLength > 0 }) // barrier queued
 
 	for i := 0; i < 8; i++ { // overfill: log.DropOldest must not evict the barrier
-		l.InfoString("filler")
+		l.Info("filler")
 	}
 	close(w.release)
 
@@ -58,11 +57,10 @@ func TestFlushBarrierSurvivesDropOldest(t *testing.T) {
 
 func TestFlushBarrierNotDroppedWhenOnlyBarriersQueued(t *testing.T) {
 	w := &blockingWriter{release: make(chan struct{})}
-	l := log.NewLogger(w, log.INFO, &log.DefaultFormatter{})
-	l.EnableAsync(log.AsyncOptions{QueueSize: 2, DropStrategy: log.DropOldest})
-	defer l.DisableAsync()
+	l := log.Must(log.New(log.WithOutput(w), log.WithLevel(log.INFO), log.WithAsyncQueue(2), log.WithAsyncDropOldest()))
+	defer l.Close()
 
-	l.InfoString("A")
+	l.Info("A")
 	waitFor(t, func() bool { return l.AsyncStats().QueueLength == 0 })
 
 	var wg sync.WaitGroup
@@ -72,7 +70,7 @@ func TestFlushBarrierNotDroppedWhenOnlyBarriersQueued(t *testing.T) {
 	}
 	waitFor(t, func() bool { return l.AsyncStats().QueueLength == 2 })
 
-	l.InfoString("arrives with no droppable entry available")
+	l.Info("arrives with no droppable entry available")
 	close(w.release)
 
 	done := make(chan struct{})
@@ -93,12 +91,10 @@ func TestAsyncPreservesCallerAndStacktrace(t *testing.T) {
 		return buf.Write(p)
 	})
 
-	l := log.NewLogger(sink, log.INFO, &log.JSONFormatter{IncludeCaller: true})
-	l.SetIncludeStacktrace(true)
-	l.EnableAsync(log.AsyncOptions{QueueSize: 16})
-	l.ErrorFields("boom")
+	l := log.Must(log.New(log.WithOutput(sink), log.WithLevel(log.INFO), log.WithJSON(), log.WithCaller(), log.WithStacktrace(), log.WithAsyncQueue(16)))
+	l.Error("boom")
 	l.Flush()
-	l.DisableAsync()
+	l.Close()
 
 	mu.Lock()
 	got := buf.String()
@@ -117,8 +113,8 @@ func TestAsyncPreservesCallerAndStacktrace(t *testing.T) {
 
 func TestSyncCallerStillResolved(t *testing.T) {
 	var buf bytes.Buffer
-	l := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{IncludeCaller: true})
-	l.ErrorFields("boom")
+	l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON(), log.WithCaller()))
+	l.Error("boom")
 	if !strings.Contains(buf.String(), `"file":"async_reliability_test.go"`) {
 		t.Errorf("synchronous caller resolution regressed: %s", buf.String())
 	}
@@ -126,12 +122,11 @@ func TestSyncCallerStillResolved(t *testing.T) {
 
 func TestFatalDrainsAsyncQueue(t *testing.T) {
 	if os.Getenv("FATAL_DRAIN_CHILD") == "1" {
-		l := log.NewLogger(os.Stdout, log.INFO, &log.DefaultFormatter{})
-		l.EnableAsync(log.AsyncOptions{QueueSize: 128, BatchSize: 32})
+		l := log.Must(log.New(log.WithOutput(os.Stdout), log.WithLevel(log.INFO), log.WithAsyncQueue(128), log.WithAsyncBatch(32, 0)))
 		for i := 0; i < 5; i++ {
-			l.InfoString("queued-entry")
+			l.Info("queued-entry")
 		}
-		l.FatalString("fatal-entry")
+		l.Fatal("fatal-entry")
 		return
 	}
 

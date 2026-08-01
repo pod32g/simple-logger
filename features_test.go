@@ -33,7 +33,7 @@ func TestParseLevelAndString(t *testing.T) {
 
 func TestDefaultLogger(t *testing.T) {
 	var buf bytes.Buffer
-	custom := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	custom := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	log.SetDefault(custom)
 	if log.Default() != custom {
 		t.Fatal("Default() should return the logger set via SetDefault")
@@ -46,7 +46,7 @@ func TestDefaultLogger(t *testing.T) {
 
 func TestNamedLogger(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	logger.Named("http").Named("auth").Info("msg")
 	if !strings.Contains(buf.String(), "logger=http.auth") {
 		t.Fatalf("expected dotted component name, got %q", buf.String())
@@ -55,10 +55,9 @@ func TestNamedLogger(t *testing.T) {
 
 func TestKeyRedactor(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{IncludeCaller: false})
-	logger.SetRedactor(log.NewKeyRedactor("password", "token"))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON(), log.WithRedactor(log.NewKeyRedactor("password", "token"))))
 
-	logger.InfoFields("login", log.String("user", "alice"), log.String("Password", "hunter2"))
+	logger.Info("login", log.String("user", "alice"), log.String("Password", "hunter2"))
 	out := buf.String()
 	if strings.Contains(out, "hunter2") {
 		t.Fatalf("password value leaked: %q", out)
@@ -70,11 +69,11 @@ func TestKeyRedactor(t *testing.T) {
 
 func TestPatternScrubber(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
 	bearer := regexp.MustCompile(`Bearer [A-Za-z0-9._-]+`)
-	logger.SetRedactor(log.NewPatternScrubber(bearer))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO),
+		log.WithRedactor(log.NewPatternScrubber(bearer))))
 
-	logger.InfoFields("auth Bearer abc123.def", log.String("hdr", "Bearer secrettoken"))
+	logger.Info("auth Bearer abc123.def", log.String("hdr", "Bearer secrettoken"))
 	out := buf.String()
 	if strings.Contains(out, "abc123") || strings.Contains(out, "secrettoken") {
 		t.Fatalf("scrubber failed to mask secrets: %q", out)
@@ -86,9 +85,8 @@ func TestPatternScrubber(t *testing.T) {
 
 func TestDeduplicateFields(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{IncludeCaller: false})
-	logger.SetDeduplicateFields(true)
-	logger.InfoFields("dup", log.String("k", "first"), log.String("k", "last"))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON(), log.WithDeduplicateFields()))
+	logger.Info("dup", log.String("k", "first"), log.String("k", "last"))
 	out := buf.String()
 	if strings.Count(out, `"k"`) != 1 {
 		t.Fatalf("expected a single k key, got %q", out)
@@ -100,10 +98,8 @@ func TestDeduplicateFields(t *testing.T) {
 
 func TestMaxFieldAndMessageBytes(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.SetMaxFieldBytes(5)
-	logger.SetMaxMessageBytes(4)
-	logger.InfoFields("abcdefgh", log.String("k", "0123456789"))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithMaxFieldBytes(5), log.WithMaxMessageBytes(4)))
+	logger.Info("abcdefgh", log.String("k", "0123456789"))
 	out := buf.String()
 	if !strings.Contains(out, "...[+") {
 		t.Fatalf("expected truncation marker, got %q", out)
@@ -119,9 +115,9 @@ func (f failWriter) Write([]byte) (int, error) { return 0, f.err }
 
 func TestWriteErrorHandler(t *testing.T) {
 	sentinel := errors.New("disk full")
-	logger := log.NewLogger(failWriter{err: sentinel}, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
 	var got error
-	logger.SetErrorHandler(func(err error) { got = err })
+	logger := log.Must(log.New(log.WithOutput(failWriter{err: sentinel}), log.WithLevel(log.INFO),
+		log.WithErrorHandler(func(err error) { got = err })))
 
 	logger.Info("lost line")
 	if !errors.Is(got, sentinel) {
@@ -134,9 +130,8 @@ func TestWriteErrorHandler(t *testing.T) {
 
 func TestFlushDrainsWithoutTeardown(t *testing.T) {
 	var buf lockedBuffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 16})
-	defer logger.DisableAsync()
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithAsyncQueue(16)))
+	defer logger.Close()
 
 	logger.Info("first")
 	logger.Flush()
@@ -171,7 +166,7 @@ func (s *syncBuffer) Sync() error {
 
 func TestSyncCallsUnderlyingSync(t *testing.T) {
 	sb := &syncBuffer{}
-	logger := log.NewLogger(sb, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(sb), log.WithLevel(log.INFO)))
 	logger.Info("x")
 	if err := logger.Sync(); err != nil {
 		t.Fatalf("Sync returned error: %v", err)
@@ -185,7 +180,7 @@ func TestSyncCallsUnderlyingSync(t *testing.T) {
 
 func TestRecoverRepanicsAndLogs(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 
 	repanicked := false
 	func() {
@@ -208,7 +203,7 @@ func TestRecoverRepanicsAndLogs(t *testing.T) {
 
 func TestRecoverAndContinueSwallows(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 
 	reached := false
 	func() {
@@ -239,7 +234,7 @@ func TestRecoverAndContinueSwallows(t *testing.T) {
 func TestJSONFormatterAlwaysEmitsValidJSON(t *testing.T) {
 	cases := []struct {
 		name      string
-		setup     func(*log.Logger)
+		opts      []log.Option
 		message   string
 		fields    []log.Field
 		wantKey   string
@@ -289,7 +284,7 @@ func TestJSONFormatterAlwaysEmitsValidJSON(t *testing.T) {
 		},
 		{
 			name:      "truncation that lands mid-rune",
-			setup:     func(l *log.Logger) { l.SetMaxFieldBytes(2) },
+			opts:      []log.Option{log.WithMaxFieldBytes(2)},
 			fields:    []log.Field{log.String("k", "aé")},
 			wantKey:   "k",
 			wantValue: "a...[+2 bytes]",
@@ -299,15 +294,14 @@ func TestJSONFormatterAlwaysEmitsValidJSON(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			l := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{})
-			if tc.setup != nil {
-				tc.setup(l)
-			}
+			l := log.Must(log.New(append(
+				[]log.Option{log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON()},
+				tc.opts...)...))
 			msg := tc.message
 			if msg == "" {
 				msg = "m"
 			}
-			l.InfoFields(msg, tc.fields...)
+			l.Info(msg, tc.fields...)
 
 			var out map[string]interface{}
 			if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
@@ -329,8 +323,8 @@ func TestJSONFormatterAlwaysEmitsValidJSON(t *testing.T) {
 
 func TestJSONFormatterEscapesMessage(t *testing.T) {
 	var buf bytes.Buffer
-	l := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{})
-	l.InfoString("line one\nline two\ttabbed \"quoted\"")
+	l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON()))
+	l.Info("line one\nline two\ttabbed \"quoted\"")
 
 	if n := bytes.Count(bytes.TrimRight(buf.Bytes(), "\n"), []byte("\n")); n != 0 {
 		t.Errorf("message newline was not escaped, entry spans %d extra lines: %s", n, buf.String())
@@ -346,9 +340,8 @@ func TestJSONFormatterEscapesMessage(t *testing.T) {
 
 func TestTruncationStopsOnRuneBoundary(t *testing.T) {
 	var buf bytes.Buffer
-	l := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{})
-	l.SetMaxMessageBytes(4)
-	l.InfoString("héllo")
+	l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON(), log.WithMaxMessageBytes(4)))
+	l.Info("héllo")
 
 	var out map[string]interface{}
 	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {

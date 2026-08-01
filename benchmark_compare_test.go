@@ -11,24 +11,36 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+// Every benchmark below logs the same message with the same single typed field,
+// so the comparison is between encoders rather than between calling styles. The
+// earlier version of this file compared our concatenating variadic call against
+// zerolog's typed field, which flattered nobody.
+
 func BenchmarkSimpleLogger(b *testing.B) {
-	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(io.Discard), log.WithLevel(log.INFO)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		logger.Info("benchmark message", i)
+		logger.Info("benchmark message", log.Int("i", i))
+	}
+}
+
+func BenchmarkSimpleLoggerJSON(b *testing.B) {
+	logger := log.Must(log.New(log.WithOutput(io.Discard), log.WithLevel(log.INFO), log.WithJSON()))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		logger.Info("benchmark message", log.Int("i", i))
 	}
 }
 
 func BenchmarkSimpleLoggerNoSync(b *testing.B) {
-	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.SetSynchronized(false)
+	logger := log.Must(log.New(log.WithOutput(io.Discard), log.WithLevel(log.INFO), log.WithUnsynchronized()))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		logger.Info("benchmark message", i)
+		logger.Info("benchmark message", log.Int("i", i))
 	}
 }
 
-func BenchmarkZapSugar(b *testing.B) {
+func zapCore() zapcore.Core {
 	encoderCfg := zapcore.EncoderConfig{
 		TimeKey:        "",
 		LevelKey:       "level",
@@ -42,12 +54,24 @@ func BenchmarkZapSugar(b *testing.B) {
 		EncodeDuration: zapcore.StringDurationEncoder,
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 	}
-	core := zapcore.NewCore(zapcore.NewJSONEncoder(encoderCfg), zapcore.AddSync(io.Discard), zapcore.InfoLevel)
-	logger := zap.New(core).Sugar()
-	b.Cleanup(func() { logger.Sync() })
+	return zapcore.NewCore(zapcore.NewJSONEncoder(encoderCfg), zapcore.AddSync(io.Discard), zapcore.InfoLevel)
+}
+
+func BenchmarkZap(b *testing.B) {
+	logger := zap.New(zapCore())
+	b.Cleanup(func() { _ = logger.Sync() })
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		logger.Info("benchmark message", i)
+		logger.Info("benchmark message", zap.Int("i", i))
+	}
+}
+
+func BenchmarkZapSugar(b *testing.B) {
+	logger := zap.New(zapCore()).Sugar()
+	b.Cleanup(func() { _ = logger.Sync() })
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		logger.Infow("benchmark message", "i", i)
 	}
 }
 
@@ -57,7 +81,7 @@ func BenchmarkLogrus(b *testing.B) {
 	logger.SetLevel(logrus.InfoLevel)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		logger.Info("benchmark message", i)
+		logger.WithField("i", i).Info("benchmark message")
 	}
 }
 

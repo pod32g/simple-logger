@@ -22,15 +22,14 @@ type logEntry struct {
 
 func TestAsyncStatsEndToEnd(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 4, DropStrategy: log.DropNew})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithAsyncQueue(4)))
 
 	for i := 0; i < 200; i++ {
-		logger.InfoString("async-drop-test")
+		logger.Info("async-drop-test")
 	}
 
 	stats := logger.AsyncStats()
-	logger.DisableAsync()
+	logger.Close()
 
 	if stats.Dropped == 0 {
 		t.Fatalf("expected drops to occur, got stats=%+v", stats)
@@ -42,7 +41,7 @@ func TestAsyncStatsEndToEnd(t *testing.T) {
 
 func TestHookFiltersEndToEnd(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG)))
 
 	var mu sync.Mutex
 	allEntries := make([]logEntry, 0, 2)
@@ -65,9 +64,9 @@ func TestHookFiltersEndToEnd(t *testing.T) {
 		}),
 	)
 
-	logger.InfoFields("ignored", log.String("key", "value"))
-	logger.ErrorFields("important", log.String("key", "value"))
-	logger.ErrorFields("other", log.String("key", "value"))
+	logger.Info("ignored", log.String("key", "value"))
+	logger.Error("important", log.String("key", "value"))
+	logger.Error("other", log.String("key", "value"))
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -84,7 +83,7 @@ func TestHookFiltersEndToEnd(t *testing.T) {
 
 func TestSlogBridgeEndToEnd(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON()))
 	handler := slogbridge.NewHandler(logger, slog.LevelInfo)
 	slogger := slog.New(handler)
 
@@ -121,10 +120,9 @@ func TestOTLPHookEndToEnd(t *testing.T) {
 	hook := otlp.NewHook(exporter, otlp.WithServiceName("svc"))
 
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.AddHook(hook)
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithHook(hook)))
 
-	logger.InfoFields("otlp", log.String("key", "value"))
+	logger.Info("otlp", log.String("key", "value"))
 
 	// The hook batches, so ask for delivery rather than waiting one out.
 	if err := hook.Flush(context.Background()); err != nil {

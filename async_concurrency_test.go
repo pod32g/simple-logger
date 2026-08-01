@@ -2,6 +2,7 @@ package log_test
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -47,7 +48,7 @@ func (g *gatedWriter) String() string { return g.buf.String() }
 // -race. It must now complete cleanly.
 func TestAsyncConcurrentReconfiguration(t *testing.T) {
 	var buf lockedBuffer
-	logger := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG)))
 	defer logger.Close()
 
 	var stop atomic.Bool
@@ -68,12 +69,9 @@ func TestAsyncConcurrentReconfiguration(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		strategies := []log.DropStrategy{log.DropNew, log.DropOldest, log.BlockWhenFull}
 		for i := 0; i < 200; i++ {
-			logger.EnableAsync(log.AsyncOptions{QueueSize: 4, DropStrategy: strategies[i%len(strategies)]})
-			logger.SetDropStrategy(strategies[(i+1)%len(strategies)])
 			logger.SetLevel(log.INFO)
-			logger.DisableAsync()
+			logger.SetOutput(io.Discard)
 			logger.SetLevel(log.DEBUG)
 		}
 	}()
@@ -85,8 +83,7 @@ func TestAsyncConcurrentReconfiguration(t *testing.T) {
 
 func TestAsyncDropOldest(t *testing.T) {
 	g := newGatedWriter()
-	logger := log.NewLogger(g, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 1, DropStrategy: log.DropOldest})
+	logger := log.Must(log.New(log.WithOutput(g), log.WithLevel(log.INFO), log.WithAsyncQueue(1), log.WithAsyncDropOldest()))
 
 	logger.Info("a") // worker picks this up and blocks inside Write
 	<-g.started      // queue is now empty and the worker is parked
@@ -101,7 +98,7 @@ func TestAsyncDropOldest(t *testing.T) {
 	}
 
 	close(g.release)
-	logger.DisableAsync()
+	logger.Close()
 
 	// The level token is "INFO" and timestamps are numeric, so the only source
 	// of the letters a-d in the output is the message itself.
@@ -116,8 +113,7 @@ func TestAsyncDropOldest(t *testing.T) {
 
 func TestAsyncBlockWhenFull(t *testing.T) {
 	g := newGatedWriter()
-	logger := log.NewLogger(g, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 1, DropStrategy: log.BlockWhenFull})
+	logger := log.Must(log.New(log.WithOutput(g), log.WithLevel(log.INFO), log.WithAsyncQueue(1), log.WithAsyncBlocking()))
 
 	logger.Info("a")
 	<-g.started // worker parked inside Write("a")
@@ -134,7 +130,7 @@ func TestAsyncBlockWhenFull(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	close(g.release)
 	wg.Wait()
-	logger.DisableAsync()
+	logger.Close()
 
 	out := g.String()
 	for _, want := range []string{"a", "b", "c"} {
@@ -147,41 +143,39 @@ func TestAsyncBlockWhenFull(t *testing.T) {
 	}
 }
 
-func TestSetDropStrategySwitchesBehavior(t *testing.T) {
+func TestAsyncDropOldestKeepsNewest(t *testing.T) {
 	g := newGatedWriter()
-	logger := log.NewLogger(g, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 1, DropStrategy: log.DropNew})
+	logger := log.Must(log.New(log.WithOutput(g), log.WithLevel(log.INFO),
+		log.WithAsyncQueue(1), log.WithAsyncDropOldest()))
 
 	logger.Info("a")
 	<-g.started
-
-	logger.SetDropStrategy(log.DropOldest)
 
 	logger.Info("b") // queued
 	logger.Info("c") // queue full -> with DropOldest, evict "b" and keep "c"
 
 	close(g.release)
-	logger.DisableAsync()
+	logger.Close()
 
 	out := g.String()
 	if !strings.Contains(out, "c") {
-		t.Fatalf("after switching to DropOldest the newest entry should survive, got %q", out)
+		t.Fatalf("under DropOldest the newest entry should survive, got %q", out)
 	}
 }
 
 func TestAsyncStats(t *testing.T) {
 	// Disabled async: zero-valued stats.
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	if s := logger.AsyncStats(); s.QueueSize != 0 || s.QueueLength != 0 || s.Dropped != 0 {
 		t.Fatalf("expected zero stats when async disabled, got %+v", s)
 	}
 
 	// Enabled async with a parked worker: QueueLength reflects buffered entries.
 	g := newGatedWriter()
-	logger.SetOutput(g)
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 4, DropStrategy: log.BlockWhenFull})
-	defer logger.DisableAsync()
+	logger = log.Must(log.New(log.WithOutput(g), log.WithLevel(log.INFO),
+		log.WithAsyncQueue(4), log.WithAsyncBlocking()))
+	defer logger.Close()
 
 	logger.Info("a")
 	<-g.started // worker parked, queue empty
@@ -217,8 +211,7 @@ func (panicHook) Fire(level log.LogLevel, message string, fields []log.Field) {
 // not bring down the caller (sync) or the async worker.
 func TestHookPanicDoesNotCrash(t *testing.T) {
 	var buf lockedBuffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.AddHook(panicHook{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithHook(panicHook{})))
 
 	// Synchronous: must not panic, and the line must still be written.
 	logger.Info("sync-after-hook")
@@ -227,9 +220,10 @@ func TestHookPanicDoesNotCrash(t *testing.T) {
 	}
 
 	// Asynchronous: the worker must survive the panic and keep draining.
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 8})
-	logger.Info("async-after-hook")
-	logger.DisableAsync()
+	asyncLogger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO),
+		log.WithHook(panicHook{}), log.WithAsyncQueue(8)))
+	asyncLogger.Info("async-after-hook")
+	asyncLogger.Close()
 	if !strings.Contains(buf.String(), "async-after-hook") {
 		t.Fatalf("expected async log line after hook panic, got %q", buf.String())
 	}
@@ -240,9 +234,9 @@ func TestHookPanicDoesNotCrash(t *testing.T) {
 // enabled and an aggressive sampler is installed — the documented contract.
 func TestFatalExitsInAsyncMode(t *testing.T) {
 	if os.Getenv("LOGGER_FATAL_SUBPROCESS") == "1" {
-		logger := log.NewLogger(os.Stdout, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-		logger.EnableAsync(log.AsyncOptions{QueueSize: 8})
-		logger.SetSampler(log.NewEveryNSampler(1000)) // would drop almost everything
+		logger := log.Must(log.New(log.WithOutput(os.Stdout), log.WithLevel(log.INFO),
+			log.WithAsyncQueue(8),
+			log.WithSampler(log.NewEveryNSampler(1000)))) // would drop almost everything
 		logger.Fatal("fatal in async mode")
 		// Must never reach here.
 		os.Stdout.WriteString("REACHED-AFTER-FATAL\n")

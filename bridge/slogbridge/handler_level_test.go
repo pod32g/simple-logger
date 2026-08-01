@@ -13,7 +13,7 @@ import (
 // A nil Leveler tracks the logger, so a runtime level change reaches slog.
 func TestHandlerFollowsLoggerLevel(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	slogger := slog.New(slogbridge.NewHandler(logger, nil))
 
 	slogger.Debug("hidden")
@@ -38,7 +38,7 @@ func TestHandlerFollowsLoggerLevel(t *testing.T) {
 // An explicit Leveler still gates slog independently of the logger.
 func TestHandlerHonoursExplicitLeveler(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG)))
 	slogger := slog.New(slogbridge.NewHandler(logger, slog.LevelWarn))
 
 	slogger.Info("below the handler's floor")

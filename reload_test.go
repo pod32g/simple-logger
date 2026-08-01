@@ -2,163 +2,104 @@ package log_test
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
 	log "github.com/pod32g/simple-logger"
 )
 
-func TestWatchConfigFileReloadsOnChange(t *testing.T) {
+func TestWatchReloadsOnChange(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "logger.json")
+	writeFile(t, path, `{"level":"info","output":"stdout","format":"text"}`)
 
-	cfg := log.DefaultConfig()
-	cfg.Level = log.INFO
-	writeConfigFile(t, path, cfg)
-
+	logger := log.Must(log.New(log.WithOutput(discardWriter{}), log.WithLevel(log.ERROR)))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var mu sync.Mutex
-	levels := make([]log.LogLevel, 0, 2)
-	apply := func(c log.LoggerConfig) error {
-		mu.Lock()
-		levels = append(levels, c.Level)
-		mu.Unlock()
-		return nil
-	}
-
 	errCh := make(chan error, 1)
-	go func() { errCh <- log.WatchConfigFile(ctx, path, 5*time.Millisecond, apply, func(error) {}) }()
+	go func() { errCh <- logger.Watch(ctx, path, log.WatchInterval(5*time.Millisecond)) }()
 
-	waitForLevel := func(expected log.LogLevel) {
-		deadline := time.Now().Add(500 * time.Millisecond)
-		for {
-			mu.Lock()
-			hit := len(levels) > 0 && levels[len(levels)-1] == expected
-			mu.Unlock()
-			if hit {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("timeout waiting for level %v", expected)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
+	// The first load happens before Watch begins polling.
+	waitForLevel(t, logger, log.INFO)
 
-	waitForLevel(log.INFO)
-
-	cfg.Level = log.DEBUG
-	writeConfigFile(t, path, cfg)
-	waitForLevel(log.DEBUG)
+	writeFile(t, path, `{"level":"debug","output":"stdout","format":"text"}`)
+	waitForLevel(t, logger, log.DEBUG)
 
 	cancel()
 	select {
 	case err := <-errCh:
 		if err != nil {
-			t.Fatalf("watcher returned error: %v", err)
+			t.Fatalf("watch returned %v", err)
 		}
-	case <-time.After(time.Second):
-		t.Fatalf("watcher did not exit after cancel")
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch did not return after the context was cancelled")
 	}
-
-	mu.Lock()
-	if len(levels) < 2 {
-		t.Fatalf("expected at least two reloads, got %d", len(levels))
-	}
-	mu.Unlock()
 }
 
 func TestReloadFromChannelAppliesConfigs(t *testing.T) {
+	logger := log.Must(log.New(log.WithOutput(discardWriter{}), log.WithLevel(log.ERROR)))
+	configs := make(chan log.Config, 2)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	configs := make(chan log.LoggerConfig, 1)
 	done := make(chan struct{})
-
-	var mu sync.Mutex
-	var last log.LoggerConfig
-	apply := func(cfg log.LoggerConfig) error {
-		mu.Lock()
-		last = cfg
-		mu.Unlock()
-		return nil
-	}
-
 	go func() {
-		log.ReloadFromChannel(ctx, configs, apply, nil)
+		logger.ReloadFrom(ctx, configs)
 		close(done)
 	}()
 
 	cfg := log.DefaultConfig()
-	cfg.Level = log.ERROR
+	cfg.Level = log.DEBUG
 	configs <- cfg
+	waitForLevel(t, logger, log.DEBUG)
 
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for {
-		mu.Lock()
-		level := last.Level
-		mu.Unlock()
-		if level == log.ERROR {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for level update")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	cfg.Level = log.WARN
+	configs <- cfg
+	waitForLevel(t, logger, log.WARN)
 
-	errs := make(chan error, 1)
-	applyErr := func(cfg log.LoggerConfig) error {
-		errs <- errSentinel
-		return errSentinel
-	}
-
-	errorCtx, errorCancel := context.WithCancel(context.Background())
-	defer errorCancel()
-
-	errorCh := make(chan log.LoggerConfig, 1)
-	seenErr := make(chan struct{})
-	go func() {
-		log.ReloadFromChannel(errorCtx, errorCh, applyErr, func(err error) {
-			if err == errSentinel {
-				close(seenErr)
-			}
-		})
-	}()
-
-	errorCh <- cfg
-
-	select {
-	case <-seenErr:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("expected error handler to be invoked")
-	}
-
-	errorCancel()
 	close(configs)
 	select {
 	case <-done:
-	case <-time.After(time.Second):
-		t.Fatalf("reloader did not exit after channel close")
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReloadFrom did not return when the channel closed")
 	}
 }
 
-var errSentinel = errors.New("apply error")
+func TestReloadFromChannelReportsErrors(t *testing.T) {
+	logger := log.Must(log.New(log.WithOutput(discardWriter{}), log.WithLevel(log.INFO)))
+	configs := make(chan log.Config, 1)
+	errs := make(chan error, 1)
 
-func writeConfigFile(t *testing.T, path string, cfg log.LoggerConfig) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go logger.ReloadFrom(ctx, configs, log.WatchErrorHandler(func(err error) { errs <- err }))
+
+	bad := log.DefaultConfig()
+	bad.Format = "not-an-encoder"
+	configs <- bad
+
+	select {
+	case err := <-errs:
+		if err == nil {
+			t.Fatal("expected a non-nil error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a failing config was not reported")
+	}
+}
+
+func waitForLevel(t *testing.T, logger *log.Logger, want log.LogLevel) {
 	t.Helper()
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal config: %v", err)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if logger.Level() == want {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	t.Fatalf("level did not reach %v, still %v", want, logger.Level())
 }

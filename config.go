@@ -3,272 +3,212 @@ package log
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"strings"
-
-	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// LoggerConfig holds all configurable settings for the logger
-type LoggerConfig struct {
+// Format names a built-in encoder. It is a type rather than a free string so
+// that an unknown value is reported instead of silently defaulting.
+type Format string
+
+const (
+	FormatText    Format = "text"
+	FormatJSON    Format = "json"
+	FormatConsole Format = "console"
+)
+
+// Config is the serialisable form of a logger's setup, for configuration files
+// and environment variables. Building a logger in code is better served by New
+// and its options; this exists for configuration that arrives as data.
+//
+// Every field has a working default, so the zero Config is usable.
+type Config struct {
 	Level  LogLevel `json:"level"`
-	Output string   `json:"output"` // Can be "stdout", "stderr", or a filepath
-	Format string   `json:"format"` // Can be "text", "json", or "custom"
-	// Filepath, when non-empty, designates a log file destination and takes
-	// precedence over Output. Prefer Output for new configurations; Filepath is
-	// retained for backward compatibility.
-	Filepath          string         `json:"filepath"`
-	EnableCaller      bool           `json:"enable_caller"`
-	SyncWrites        bool           `json:"sync_writes"`
-	Colorize          bool           `json:"colorize"`
-	TimeFormat        string         `json:"time_format"`
-	IncludeStacktrace bool           `json:"include_stacktrace"`
-	Rotation          RotationConfig `json:"rotation"`
-	Custom            Formatter      `json:"-"` // Custom formatter provided by the user
+	Output string   `json:"output"` // "stdout", "stderr", or a file path
+	Format Format   `json:"format"` // text (default), json, or console
+
+	EnableCaller      bool     `json:"enable_caller"`
+	IncludeStacktrace bool     `json:"include_stacktrace"`
+	Colorize          bool     `json:"colorize"`
+	TimeFormat        string   `json:"time_format"`
+	Unsynchronized    bool     `json:"unsynchronized"`
+	Rotate            bool     `json:"rotate"`
+	Rotation          Rotation `json:"rotation"`
+
+	// Encoder overrides Format with an encoder supplied in code. It has no
+	// serialised form, which is why an unknown Format is an error rather than a
+	// silent fallback: a config file cannot name an encoder that exists only in
+	// the program.
+	Encoder Formatter `json:"-"`
 }
 
-type RotationConfig struct {
-	Enable     bool `json:"enable"`
-	MaxSize    int  `json:"max_size_mb"`
-	MaxAge     int  `json:"max_age_days"`
-	MaxBackups int  `json:"max_backups"`
-	Compress   bool `json:"compress"`
-}
-
-// DefaultConfig returns a LoggerConfig with default values
-func DefaultConfig() LoggerConfig {
-	return LoggerConfig{
-		Level:             INFO,
-		Output:            "stdout",
-		Format:            "text",
-		Filepath:          "",
-		EnableCaller:      false,
-		SyncWrites:        true,
-		Colorize:          false,
-		TimeFormat:        "",
-		IncludeStacktrace: false,
-		Rotation: RotationConfig{
-			Enable:     false,
-			MaxSize:    100,
-			MaxAge:     30,
+// DefaultConfig returns the configuration used when nothing else is specified.
+func DefaultConfig() Config {
+	return Config{
+		Level:  INFO,
+		Output: "stdout",
+		Format: FormatText,
+		Rotation: Rotation{
+			MaxSizeMB:  100,
+			MaxAgeDays: 30,
 			MaxBackups: 7,
-			Compress:   true,
 		},
 	}
 }
 
-// LoadConfigFromEnv loads the logger configuration from environment variables
-func LoadConfigFromEnv() LoggerConfig {
+// Options converts a Config into the options New takes, so that both paths
+// build exactly the same logger.
+func (c Config) Options() []Option {
+	opts := []Option{WithLevel(c.Level)}
+
+	if c.TimeFormat != "" {
+		opts = append(opts, WithTimeFormat(c.TimeFormat))
+	}
+	if c.Colorize {
+		opts = append(opts, WithColor())
+	}
+
+	switch {
+	case c.Encoder != nil:
+		opts = append(opts, WithEncoder(c.Encoder))
+	case c.Format == FormatJSON:
+		opts = append(opts, WithJSON())
+	case c.Format == FormatConsole:
+		opts = append(opts, WithConsole())
+	case c.Format == FormatText || c.Format == "":
+		// the default encoder
+	default:
+		format := c.Format
+		opts = append(opts, func(*builder) error {
+			return fmt.Errorf("unknown log format %q", format)
+		})
+	}
+
+	switch c.Output {
+	case "", "stdout":
+		opts = append(opts, WithOutput(os.Stdout))
+	case "stderr":
+		opts = append(opts, WithOutput(os.Stderr))
+	default:
+		if c.Rotate {
+			opts = append(opts, WithRotatingFile(c.Output, c.Rotation))
+		} else {
+			opts = append(opts, WithFile(c.Output))
+		}
+	}
+
+	if c.EnableCaller {
+		opts = append(opts, WithCaller())
+	}
+	if c.IncludeStacktrace {
+		opts = append(opts, WithStacktrace())
+	}
+	if c.Unsynchronized {
+		opts = append(opts, WithUnsynchronized())
+	}
+	return opts
+}
+
+// FromConfig builds a logger from a Config.
+func FromConfig(cfg Config) (*Logger, error) {
+	return New(cfg.Options()...)
+}
+
+// Apply reconfigures an existing logger in place, which is what the reload
+// helpers use. Level, encoder, output and stacktrace settings are replaced;
+// hooks and samplers registered in code are left alone.
+func (l *Logger) Apply(cfg Config) error {
+	probe, err := New(cfg.Options()...)
+	if err != nil {
+		return err
+	}
+
+	l.SetLevel(cfg.Level)
+	if fh := probe.formatter.Load(); fh != nil {
+		l.setFormatter(fh.f)
+	}
+	l.setIncludeStacktrace(cfg.IncludeStacktrace)
+	l.setSynchronized(!cfg.Unsynchronized)
+	if wh := probe.output.Load(); wh != nil {
+		l.SetOutputWithCloser(wh.w, probe.closer)
+	}
+	return nil
+}
+
+// LoadConfigFromEnv reads configuration from the LOG_* environment variables.
+func LoadConfigFromEnv() Config {
 	config := DefaultConfig()
 
-	// Log level
-	level := os.Getenv("LOG_LEVEL")
-	if level != "" {
+	if level := os.Getenv("LOG_LEVEL"); level != "" {
 		config.Level = parseLogLevel(level)
 	}
-
-	// Output destination
-	output := os.Getenv("LOG_OUTPUT")
-	if output != "" {
+	if output := os.Getenv("LOG_OUTPUT"); output != "" {
 		config.Output = output
 	}
-
-	// Log format
-	format := os.Getenv("LOG_FORMAT")
-	if format != "" {
-		config.Format = strings.ToLower(format)
+	if format := os.Getenv("LOG_FORMAT"); format != "" {
+		config.Format = Format(strings.ToLower(format))
 	}
-
-	// Enable caller
-	if enableCaller := os.Getenv("LOG_ENABLE_CALLER"); enableCaller != "" {
-		if parsed, err := strconv.ParseBool(enableCaller); err == nil {
-			config.EnableCaller = parsed
-		}
-	}
-
-	// Sync writes
-	if syncWrites := os.Getenv("LOG_SYNC_WRITES"); syncWrites != "" {
-		if parsed, err := strconv.ParseBool(syncWrites); err == nil {
-			config.SyncWrites = parsed
-		}
-	}
-
-	// Colorize
-	if colorize := os.Getenv("LOG_COLORIZE"); colorize != "" {
-		if parsed, err := strconv.ParseBool(colorize); err == nil {
-			config.Colorize = parsed
-		}
-	}
-
+	envBool("LOG_ENABLE_CALLER", &config.EnableCaller)
+	envBool("LOG_INCLUDE_STACKTRACE", &config.IncludeStacktrace)
+	envBool("LOG_COLORIZE", &config.Colorize)
+	envBool("LOG_ROTATE", &config.Rotate)
 	if timeFormat := os.Getenv("LOG_TIME_FORMAT"); timeFormat != "" {
 		config.TimeFormat = timeFormat
 	}
-	if includeStack := os.Getenv("LOG_INCLUDE_STACKTRACE"); includeStack != "" {
-		if parsed, err := strconv.ParseBool(includeStack); err == nil {
-			config.IncludeStacktrace = parsed
+	// LOG_SYNC_WRITES reads the other way round, so that the default
+	// (synchronised) stays the zero value of the field.
+	if sync := os.Getenv("LOG_SYNC_WRITES"); sync != "" {
+		if parsed, err := strconv.ParseBool(sync); err == nil {
+			config.Unsynchronized = !parsed
 		}
 	}
-
-	if rotate := os.Getenv("LOG_ROTATE"); rotate != "" {
-		if parsed, err := strconv.ParseBool(rotate); err == nil {
-			config.Rotation.Enable = parsed
-		}
-	}
-	if maxSize := os.Getenv("LOG_ROTATE_MAX_SIZE"); maxSize != "" {
-		if parsed, err := strconv.Atoi(maxSize); err == nil {
-			config.Rotation.MaxSize = parsed
-		}
-	}
-	if maxAge := os.Getenv("LOG_ROTATE_MAX_AGE"); maxAge != "" {
-		if parsed, err := strconv.Atoi(maxAge); err == nil {
-			config.Rotation.MaxAge = parsed
-		}
-	}
-	if backups := os.Getenv("LOG_ROTATE_MAX_BACKUPS"); backups != "" {
-		if parsed, err := strconv.Atoi(backups); err == nil {
-			config.Rotation.MaxBackups = parsed
-		}
-	}
+	envInt("LOG_ROTATE_MAX_SIZE", &config.Rotation.MaxSizeMB)
+	envInt("LOG_ROTATE_MAX_AGE", &config.Rotation.MaxAgeDays)
+	envInt("LOG_ROTATE_MAX_BACKUPS", &config.Rotation.MaxBackups)
 	if compress := os.Getenv("LOG_ROTATE_COMPRESS"); compress != "" {
 		if parsed, err := strconv.ParseBool(compress); err == nil {
-			config.Rotation.Compress = parsed
+			config.Rotation.NoCompress = !parsed
 		}
 	}
-
 	return config
 }
 
-// LoadConfigFromFile loads the logger configuration from a JSON file
-func LoadConfigFromFile(filePath string) (LoggerConfig, error) {
+func envBool(key string, dst *bool) {
+	if v := os.Getenv(key); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			*dst = parsed
+		}
+	}
+}
+
+func envInt(key string, dst *int) {
+	if v := os.Getenv(key); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			*dst = parsed
+		}
+	}
+}
+
+// LoadConfigFromFile reads a JSON configuration file.
+func LoadConfigFromFile(filePath string) (Config, error) {
 	config := DefaultConfig()
 	file, err := os.Open(filePath)
 	if err != nil {
 		return config, err
 	}
-	// Close error on a read-only file is not actionable.
+	// The close error on a read-only file is not actionable.
 	defer func() { _ = file.Close() }()
 
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&config)
-	if err != nil {
+	if err := json.NewDecoder(file).Decode(&config); err != nil {
 		return config, err
 	}
-
 	return config, nil
 }
 
-// UpdateLogLevel allows for dynamically updating the log level at runtime
-func (config *LoggerConfig) UpdateLogLevel(level LogLevel) {
-	config.Level = level
-}
-
-// UpdateLogFormat allows for dynamically updating the log format at runtime
-func (config *LoggerConfig) UpdateLogFormat(format string) {
-	config.Format = strings.ToLower(format)
-}
-
-// ApplyConfig applies the loaded configuration to the Logger
-func ApplyConfig(config LoggerConfig) *Logger {
-	logger, err := ConfigureLogger(nil, config)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to apply logger config: %v\n", err)
-		fallback := NewLogger(os.Stdout, config.Level, &DefaultFormatter{
-			IncludeCaller: config.EnableCaller,
-			Colorize:      config.Colorize,
-			TimeLayout:    config.TimeFormat,
-		})
-		fallback.SetIncludeStacktrace(config.IncludeStacktrace)
-		fallback.SetSynchronized(config.SyncWrites)
-		return fallback
-	}
-	return logger
-}
-
-// ConfigureLogger applies the provided configuration to an existing logger or creates a new one.
-func ConfigureLogger(logger *Logger, config LoggerConfig) (*Logger, error) {
-	// Build the formatter before opening anything: a formatter error used to
-	// return with the log file already open and unreachable, leaking a
-	// descriptor per attempt -- once per poll for a config watcher sitting on a
-	// file that names a custom formatter without supplying one.
-	formatter, err := formatterForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-
-	var output io.Writer = os.Stdout
-	var closer io.Closer
-	// Filepath, when set, takes precedence over Output as a file destination.
-	target := config.Output
-	if config.Filepath != "" {
-		target = config.Filepath
-	}
-	if target == "stderr" {
-		output = os.Stderr
-	} else if target != "stdout" {
-		if config.Rotation.Enable {
-			lj := &lumberjack.Logger{
-				Filename:   target,
-				MaxSize:    config.Rotation.MaxSize,
-				MaxAge:     config.Rotation.MaxAge,
-				MaxBackups: config.Rotation.MaxBackups,
-				Compress:   config.Rotation.Compress,
-			}
-			output = lj
-			closer = lj
-		} else {
-			file, err := os.OpenFile(target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-			if err != nil {
-				return nil, fmt.Errorf("open log file: %w", err)
-			}
-			output = file
-			closer = file
-		}
-	}
-
-	if df, ok := formatter.(*DefaultFormatter); ok {
-		df.TimeLayout = config.TimeFormat
-	}
-	if jf, ok := formatter.(*JSONFormatter); ok {
-		jf.TimeLayout = config.TimeFormat
-	}
-
-	if logger == nil {
-		logger = NewLogger(output, config.Level, formatter)
-	} else {
-		logger.SetLevel(config.Level)
-		logger.SetFormatter(formatter)
-	}
-	if closer != nil {
-		logger.SetOutputWithCloser(output, closer)
-	} else {
-		logger.SetOutput(output)
-	}
-	logger.SetSynchronized(config.SyncWrites)
-	logger.SetIncludeStacktrace(config.IncludeStacktrace)
-	return logger, nil
-}
-
-func formatterForConfig(config LoggerConfig) (Formatter, error) {
-	switch strings.ToLower(config.Format) {
-	case "json":
-		return &JSONFormatter{IncludeCaller: config.EnableCaller, TimeLayout: config.TimeFormat}, nil
-	case "console":
-		return &ConsoleFormatter{TimeLayout: config.TimeFormat, NoColor: !config.Colorize}, nil
-	case "custom":
-		if config.Custom == nil {
-			return nil, fmt.Errorf("custom formatter requested but Custom field is nil")
-		}
-		return config.Custom, nil
-	default:
-		return &DefaultFormatter{IncludeCaller: config.EnableCaller, Colorize: config.Colorize, TimeLayout: config.TimeFormat}, nil
-	}
-}
-
-// parseLogLevel converts a string representation of a log level to the corresponding LogLevel
+// parseLogLevel converts a level name to a LogLevel, falling back to INFO for
+// anything unrecognised.
 func parseLogLevel(level string) LogLevel {
-	// Lenient: unknown values fall back to INFO (ParseLevel returns INFO + error).
 	lvl, _ := ParseLevel(level)
 	return lvl
 }

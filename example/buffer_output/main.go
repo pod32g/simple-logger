@@ -1,3 +1,5 @@
+// Demonstrates writing the same entries to several destinations, and batching
+// them through the async writer.
 package main
 
 import (
@@ -10,21 +12,22 @@ import (
 )
 
 func main() {
-	logger := log.ApplyConfig(log.DefaultConfig())
-	defer logger.Close()
-
 	var buf bytes.Buffer
-	logger.SetOutputs(os.Stdout, &buf)
 
-	logger.Info("written to stdout and buffer")
-	logger.EnableAsync(log.AsyncOptions{
-		QueueSize:     8,
-		DropStrategy:  log.DropNew,
-		BatchSize:     4,
-		FlushInterval: 5 * time.Millisecond,
-	})
-	logger.InfoString("buffer-only message")
-	logger.DisableAsync()
+	logger, err := log.New(
+		log.WithOutputs(os.Stdout, &buf),
+		log.WithAsyncQueue(8),
+		log.WithAsyncBatch(4, 5*time.Millisecond),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	logger.Info("written to stdout and to the buffer")
+	logger.Info("batched behind the async writer", log.Int("batch", 1))
+
+	// Close drains the queue before returning, so the buffer is complete below.
+	logger.Close()
 
 	fmt.Println("captured buffer:")
 	fmt.Print(buf.String())

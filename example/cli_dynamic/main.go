@@ -17,7 +17,7 @@ func main() {
 	configPath := flag.String("config", "", "optional path to logger JSON config")
 	flag.Parse()
 
-	logger := log.ApplyConfig(log.DefaultConfig())
+	logger := log.Must(log.FromConfig(log.DefaultConfig()))
 	defer logger.Close()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -25,18 +25,18 @@ func main() {
 
 	if *configPath != "" {
 		go func() {
-			if err := log.WatchConfigFileForLogger(ctx, logger, *configPath, 2*time.Second, func(err error) {
+			if err := logger.Watch(ctx, *configPath, log.WatchInterval(2*time.Second), log.WatchErrorHandler(func(err error) {
 				logger.Warn("config reload failed", log.Error("error", err))
-			}); err != nil {
+			})); err != nil {
 				logger.Error("watcher exited", log.Error("error", err))
 			}
 		}()
 	}
 
-	updates := make(chan log.LoggerConfig, 1)
-	go log.ReloadLoggerFromChannel(ctx, logger, updates, func(err error) {
+	updates := make(chan log.Config, 1)
+	go logger.ReloadFrom(ctx, updates, log.WatchErrorHandler(func(err error) {
 		logger.Warn("apply config failed", log.Error("error", err))
-	})
+	}))
 
 	go promptLoop(ctx, logger, updates)
 
@@ -54,7 +54,7 @@ func main() {
 	}
 }
 
-func promptLoop(ctx context.Context, logger *log.Logger, updates chan<- log.LoggerConfig) {
+func promptLoop(ctx context.Context, logger *log.Logger, updates chan<- log.Config) {
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Println("type commands like 'level debug' or 'format json'. ctrl+c to exit")
 
@@ -99,7 +99,7 @@ func promptLoop(ctx context.Context, logger *log.Logger, updates chan<- log.Logg
 		case "format":
 			switch value {
 			case "text", "json":
-				cfg.Format = value
+				cfg.Format = log.Format(value)
 			default:
 				fmt.Println("unknown format", value)
 				continue
@@ -115,7 +115,7 @@ func promptLoop(ctx context.Context, logger *log.Logger, updates chan<- log.Logg
 			case <-ctx.Done():
 				return
 			}
-			logger.Info("applied configuration", log.String("level", levelName(cfg.Level)), log.String("format", cfg.Format))
+			logger.Info("applied configuration", log.String("level", levelName(cfg.Level)), log.String("format", string(cfg.Format)))
 		}
 	}
 }

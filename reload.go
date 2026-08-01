@@ -7,37 +7,48 @@ import (
 	"time"
 )
 
-// ConfigApplier applies a LoggerConfig. Returning an error aborts the specific
-// reload attempt but leaves the reloader running.
-type ConfigApplier func(LoggerConfig) error
+// WatchOption configures Watch.
+type WatchOption func(*watchOptions)
 
-// ApplyConfigTo returns a ConfigApplier that applies configs to the provided logger.
-func ApplyConfigTo(logger *Logger) ConfigApplier {
-	return func(cfg LoggerConfig) error {
-		if logger == nil {
-			return errors.New("logger is nil")
-		}
-		_, err := ConfigureLogger(logger, cfg)
-		return err
-	}
+type watchOptions struct {
+	interval time.Duration
+	onError  func(error)
 }
 
-// WatchConfigFile polls the provided file at the given interval and invokes
-// apply whenever the file changes. The watcher stops when the context is done.
-func WatchConfigFile(ctx context.Context, path string, interval time.Duration, apply ConfigApplier, onError func(error)) error {
-	if apply == nil {
-		return errors.New("apply function cannot be nil")
+// WatchInterval sets how often the file is polled. It defaults to one second.
+func WatchInterval(d time.Duration) WatchOption {
+	return func(o *watchOptions) { o.interval = d }
+}
+
+// WatchErrorHandler is called when a reload fails. The watcher keeps running:
+// a bad edit should not silently stop configuration from being followed.
+func WatchErrorHandler(fn func(error)) WatchOption {
+	return func(o *watchOptions) { o.onError = fn }
+}
+
+// Watch applies the configuration file at path, then re-applies it whenever the
+// file changes, until ctx is done. It returns an error only if the initial load
+// fails; later failures go to the error handler and the watch continues.
+//
+//	go logger.Watch(ctx, "log.json", log.WatchInterval(5*time.Second))
+func (l *Logger) Watch(ctx context.Context, path string, opts ...WatchOption) error {
+	if l == nil {
+		return errors.New("logger is nil")
 	}
-	if interval <= 0 {
-		interval = time.Second
+	o := watchOptions{interval: time.Second}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.interval <= 0 {
+		o.interval = time.Second
 	}
 
-	sig, err := loadAndApply(path, apply)
+	sig, err := l.loadAndApply(path)
 	if err != nil {
 		return err
 	}
 
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(o.interval)
 	defer ticker.Stop()
 
 	for {
@@ -47,17 +58,15 @@ func WatchConfigFile(ctx context.Context, path string, interval time.Duration, a
 		case <-ticker.C:
 			info, err := os.Stat(path)
 			if err != nil {
-				handleReloadError(err, onError)
+				report(o.onError, err)
 				continue
 			}
-			next := fileSignatureFromInfo(info)
-			if next == sig {
+			if next := fileSignatureFromInfo(info); next == sig {
 				continue
 			}
-
-			s, err := loadAndApply(path, apply)
+			s, err := l.loadAndApply(path)
 			if err != nil {
-				handleReloadError(err, onError)
+				report(o.onError, err)
 				continue
 			}
 			sig = s
@@ -65,17 +74,15 @@ func WatchConfigFile(ctx context.Context, path string, interval time.Duration, a
 	}
 }
 
-// WatchConfigFileForLogger wraps WatchConfigFile to automatically update logger.
-func WatchConfigFileForLogger(ctx context.Context, logger *Logger, path string, interval time.Duration, onError func(error)) error {
-	return WatchConfigFile(ctx, path, interval, ApplyConfigTo(logger), onError)
-}
-
-// ReloadFromChannel listens for configurations on the provided channel and
-// applies them to the supplied ConfigApplier. The reloader exits when the
-// context is done or the channel closes.
-func ReloadFromChannel(ctx context.Context, configs <-chan LoggerConfig, apply ConfigApplier, onError func(error)) {
-	if apply == nil {
+// ReloadFrom applies every configuration received on configs until the channel
+// closes or ctx is done. Failures go to the error handler, if one is given.
+func (l *Logger) ReloadFrom(ctx context.Context, configs <-chan Config, opts ...WatchOption) {
+	if l == nil {
 		return
+	}
+	var o watchOptions
+	for _, opt := range opts {
+		opt(&o)
 	}
 	for {
 		select {
@@ -85,16 +92,11 @@ func ReloadFromChannel(ctx context.Context, configs <-chan LoggerConfig, apply C
 			if !ok {
 				return
 			}
-			if err := apply(cfg); err != nil {
-				handleReloadError(err, onError)
+			if err := l.Apply(cfg); err != nil {
+				report(o.onError, err)
 			}
 		}
 	}
-}
-
-// ReloadLoggerFromChannel is a convenience wrapper that applies configs to logger.
-func ReloadLoggerFromChannel(ctx context.Context, logger *Logger, configs <-chan LoggerConfig, onError func(error)) {
-	ReloadFromChannel(ctx, configs, ApplyConfigTo(logger), onError)
 }
 
 type fileSignature struct {
@@ -106,12 +108,12 @@ func fileSignatureFromInfo(info os.FileInfo) fileSignature {
 	return fileSignature{modTime: info.ModTime(), size: info.Size()}
 }
 
-func loadAndApply(path string, apply ConfigApplier) (fileSignature, error) {
+func (l *Logger) loadAndApply(path string) (fileSignature, error) {
 	cfg, err := LoadConfigFromFile(path)
 	if err != nil {
 		return fileSignature{}, err
 	}
-	if err := apply(cfg); err != nil {
+	if err := l.Apply(cfg); err != nil {
 		return fileSignature{}, err
 	}
 	info, err := os.Stat(path)
@@ -121,7 +123,7 @@ func loadAndApply(path string, apply ConfigApplier) (fileSignature, error) {
 	return fileSignatureFromInfo(info), nil
 }
 
-func handleReloadError(err error, handler func(error)) {
+func report(handler func(error), err error) {
 	if err != nil && handler != nil {
 		handler(err)
 	}

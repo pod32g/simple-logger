@@ -12,25 +12,39 @@ import (
 	log "github.com/pod32g/simple-logger"
 )
 
-// TestApplyConfigFallbackOnError verifies that ApplyConfig never returns a
-// broken logger: when the configuration is invalid (custom format with no
-// Custom formatter), it falls back to a working DefaultFormatter logger.
-func TestApplyConfigFallbackOnError(t *testing.T) {
+// An invalid configuration is now an error rather than a silent fallback to a
+// logger the caller did not ask for. ApplyConfig used to swallow this, print to
+// stderr, and hand back a stdout text logger.
+func TestFromConfigReportsInvalidFormat(t *testing.T) {
 	cfg := log.DefaultConfig()
-	cfg.Format = "custom"
-	cfg.Custom = nil // forces formatterForConfig to error
+	cfg.Format = "custom" // no such built-in encoder, and Encoder is nil
 
-	logger := log.ApplyConfig(cfg)
-	if logger == nil {
-		t.Fatal("ApplyConfig must return a non-nil fallback logger")
+	logger, err := log.FromConfig(cfg)
+	if err == nil {
+		t.Fatal("expected an error for an unknown format")
+	}
+	if logger != nil {
+		t.Fatal("expected no logger alongside the error")
+	}
+}
+
+// Supplying the encoder in code is how a custom encoder is selected now, with
+// no stringly-typed discriminator to keep in step.
+func TestFromConfigUsesSuppliedEncoder(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := log.DefaultConfig()
+	cfg.Encoder = testFormatter{}
+
+	logger, err := log.FromConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
 	defer logger.Close()
 
-	var buf bytes.Buffer
 	logger.SetOutput(&buf)
-	logger.Info("fallback works")
-	if !strings.Contains(buf.String(), "fallback works") {
-		t.Fatalf("expected fallback logger to log, got %q", buf.String())
+	logger.Info("via encoder")
+	if !strings.Contains(buf.String(), "CUSTOM(INFO) via encoder") {
+		t.Fatalf("expected the supplied encoder to be used, got %q", buf.String())
 	}
 }
 
@@ -42,7 +56,7 @@ func TestConfigureLoggerFileOpenError(t *testing.T) {
 	// Parent directory does not exist, so os.OpenFile must fail.
 	cfg.Output = filepath.Join(t.TempDir(), "missing", "app.log")
 
-	_, err := log.ConfigureLogger(nil, cfg)
+	_, err := log.FromConfig(cfg)
 	if err == nil {
 		t.Fatal("expected an error opening an unwritable log file")
 	}
@@ -56,9 +70,9 @@ func TestConfigureLoggerFileOpenError(t *testing.T) {
 func TestConfigFilepathPrecedence(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "via-filepath.log")
 	cfg := log.DefaultConfig() // Output stays "stdout"
-	cfg.Filepath = file
+	cfg.Output = file
 
-	logger := log.ApplyConfig(cfg)
+	logger := log.Must(log.FromConfig(cfg))
 	logger.Info("routed via filepath")
 	if err := logger.Close(); err != nil {
 		t.Fatalf("close failed: %v", err)
@@ -118,7 +132,7 @@ func TestConfigLevelRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var back log.LoggerConfig
+	var back log.Config
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("%v (encoded as %s)", err, data)
 	}
@@ -135,7 +149,7 @@ func TestConfigureLoggerClosesFileWhenFormatterFails(t *testing.T) {
 
 	before := openFileCount(t)
 	for i := 0; i < 20; i++ {
-		if _, err := log.ConfigureLogger(nil, cfg); err == nil {
+		if _, err := log.FromConfig(cfg); err == nil {
 			t.Fatal("expected an error")
 		}
 	}

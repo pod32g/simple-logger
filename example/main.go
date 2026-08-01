@@ -1,157 +1,147 @@
+// A tour of the library: each section is a self-contained function showing one
+// capability. Run it with `go run ./example`.
 package main
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
-	"strings"
+	"regexp"
 	"time"
 
 	log "github.com/pod32g/simple-logger"
 )
 
 func main() {
-	fmt.Println("== Basic configuration with color and custom time layout ==")
-	basicLogging()
-
-	fmt.Println("\n== Structured fields and context metadata ==")
-	structuredLogging()
-
-	fmt.Println("\n== Sampling and hooks ==")
-	samplingAndHooks()
-
-	fmt.Println("\n== Asynchronous logging ==")
-	asyncLogging()
-
-	fmt.Println("\n== Rolling file output (lumberjack) ==")
-	rotationExample()
-
-	fmt.Println("\n== Custom formatter using ArgsFormatter ==")
-	customFormatter()
+	section("Getting started", helloWorld)
+	section("Structured fields", structuredLogging)
+	section("Derived loggers", derivedLoggers)
+	section("Presets", presets)
+	section("Sampling and hooks", samplingAndHooks)
+	section("Redaction", redaction)
+	section("Asynchronous writing", asyncLogging)
+	section("File rotation", rotation)
+	section("Custom encoder", customEncoder)
 }
 
-func basicLogging() {
-	cfg := log.DefaultConfig()
-	cfg.Colorize = true
-	cfg.TimeFormat = time.RFC822
-	cfg.IncludeStacktrace = true
+func section(title string, fn func()) {
+	fmt.Printf("\n== %s ==\n", title)
+	fn()
+}
 
-	logger := log.ApplyConfig(cfg)
+// The shortest thing that works: no configuration at all.
+func helloWorld() {
+	logger := log.Must(log.New())
 	defer logger.Close()
 
-	logger.Info("welcome to simple-logger")
-	logger.SetIncludeStacktrace(true)
-	logger.Error("stacktraces appear automatically on errors")
+	logger.Info("ready")
+	logger.Warnf("listening on port %d", 8080)
 }
 
 func structuredLogging() {
-	logger := log.ApplyConfig(log.DefaultConfig())
+	logger := log.Must(log.New(log.WithJSON()))
 	defer logger.Close()
 
-	logger.InfoFields("user login",
+	logger.Info("user login",
 		log.String("user", "alice"),
-		log.Bool("success", true),
-	)
+		log.Int("attempt", 3),
+		log.Bool("success", true))
+}
 
-	ctx := log.WithFields(context.Background(), log.String("request_id", "req-123"))
-	logger.InfoContext(ctx, "checkout complete", log.Float64("total", 42.10))
+// With binds fields to every entry a derived logger emits; Named tags a
+// component. Both share the parent's output, level and hooks.
+func derivedLoggers() {
+	logger := log.Must(log.New())
+	defer logger.Close()
+
+	requestLogger := logger.With(log.String("request_id", "req-42")).Named("http")
+	requestLogger.Info("handling request")
+	requestLogger.Info("request complete", log.String("status", "200"))
+}
+
+// Development and Production bundle the settings each context usually wants,
+// and compose with any option that follows them.
+func presets() {
+	dev := log.Must(log.New(log.Development(), log.WithLevel(log.INFO)))
+	defer dev.Close()
+	dev.Info("development: console encoding, colour, call sites")
+
+	prod := log.Must(log.New(log.Production(), log.WithOutput(os.Stdout)))
+	defer prod.Close()
+	prod.Info("production: JSON, async, stacktraces on errors")
 }
 
 func samplingAndHooks() {
-	logger := log.ApplyConfig(log.DefaultConfig())
+	logger := log.Must(log.New(
+		log.WithSampler(log.NewEveryNSampler(3)),
+		log.WithHook(log.HookFunc(func(level log.LogLevel, message string, fields []log.Field) {
+			fmt.Printf("   hook saw %s %q with %d fields\n", level, message, len(fields))
+		}))))
 	defer logger.Close()
-
-	logger.SetSampler(log.NewEveryNSampler(3))
-	logger.AddHook(log.HookFunc(func(level log.LogLevel, message string, fields []log.Field) {
-		fmt.Printf("hook -> %s %q fields=%v\n", levelName(level), message, fields)
-	}))
 
 	for i := 1; i <= 6; i++ {
-		logger.InfoFields("periodic heartbeat", log.Int("iteration", i))
+		logger.Info("heartbeat", log.Int("iteration", i))
 	}
 }
 
+// Redactors run before formatting and before hooks, so a secret reaches
+// neither.
+func redaction() {
+	logger := log.Must(log.New(
+		log.WithJSON(),
+		log.WithRedactor(log.NewKeyRedactor("password", "token"))))
+	defer logger.Close()
+
+	logger.Info("credentials received",
+		log.String("user", "alice"),
+		log.String("password", "hunter2"))
+
+	scrubbed := log.Must(log.New(
+		log.WithRedactor(log.NewPatternScrubber(regexp.MustCompile(`Bearer \S+`)))))
+	defer scrubbed.Close()
+	scrubbed.Info("upstream rejected Bearer abc123.def")
+}
+
+// The async writer keeps the logging goroutine off the sink. Close drains it.
 func asyncLogging() {
-	logger := log.ApplyConfig(log.DefaultConfig())
+	logger := log.Must(log.New(
+		log.WithAsyncQueue(256),
+		log.WithAsyncBatch(16, 10*time.Millisecond),
+		log.WithAsyncDropOldest()))
+
+	for i := 0; i < 3; i++ {
+		logger.Info("queued", log.Int("i", i))
+	}
+	logger.Flush()
+	fmt.Printf("   queue stats: %+v\n", logger.AsyncStats())
+	logger.Close()
+}
+
+func rotation() {
+	path := "example-rotation.log"
+	logger := log.Must(log.New(
+		log.WithJSON(),
+		log.WithRotatingFile(path, log.Rotation{MaxSizeMB: 1, MaxBackups: 3})))
+
+	logger.Info("written to a rotating file", log.String("path", path))
+	logger.Close()
+
+	if err := os.Remove(path); err == nil {
+		fmt.Println("   wrote and cleaned up", path)
+	}
+}
+
+// An encoder is one interface with one method.
+type bracketEncoder struct{}
+
+func (bracketEncoder) Format(level log.LogLevel, message string) string {
+	return fmt.Sprintf("<%s> %s\n", level, message)
+}
+
+func customEncoder() {
+	logger := log.Must(log.New(log.WithEncoder(bracketEncoder{})))
 	defer logger.Close()
 
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 64, DropStrategy: log.DropNew})
-	for i := 0; i < 5; i++ {
-		logger.InfoString(fmt.Sprintf("async message %d", i))
-	}
-	logger.DisableAsync()
-}
-
-func rotationExample() {
-	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("app-%d.log", time.Now().UnixNano()))
-
-	cfg := log.DefaultConfig()
-	cfg.Output = logPath
-	cfg.Format = "json"
-	cfg.Rotation.Enable = true
-	cfg.Rotation.MaxSize = 1 // MB
-
-	logger := log.ApplyConfig(cfg)
-	defer logger.Close()
-
-	logger.Info("rotation example", log.String("path", logPath))
-	fmt.Printf("rotation example wrote to %s\n", logPath)
-}
-
-func customFormatter() {
-	cfg := log.DefaultConfig()
-	cfg.Format = "custom"
-	cfg.Custom = &StreamingFormatter{}
-
-	logger := log.ApplyConfig(cfg)
-	defer logger.Close()
-
-	logger.Info("custom formatter", log.String("user", "emma"))
-}
-
-// StreamingFormatter demonstrates implementing ArgsFormatter for high-performance logging
-type StreamingFormatter struct{}
-
-func (f *StreamingFormatter) Format(level log.LogLevel, message string) string {
-	return fmt.Sprintf("[%s] %s\n", levelName(level), message)
-}
-
-func (f *StreamingFormatter) FormatArgs(level log.LogLevel, w io.Writer, v ...interface{}) {
-	f.FormatArgsWithFields(level, nil, w, v...)
-}
-
-func (f *StreamingFormatter) FormatWithFields(level log.LogLevel, message string, fields []log.Field) string {
-	var b strings.Builder
-	f.FormatArgsWithFields(level, fields, &b, message)
-	return b.String()
-}
-
-func (f *StreamingFormatter) FormatArgsWithFields(level log.LogLevel, fields []log.Field, w io.Writer, v ...interface{}) {
-	fmt.Fprintf(w, "[%s]", levelName(level))
-	for _, val := range v {
-		fmt.Fprintf(w, " %v", val)
-	}
-	for _, field := range fields {
-		fmt.Fprintf(w, " %s=%v", field.Key, field.Value)
-	}
-	fmt.Fprint(w, "\n")
-}
-
-func levelName(level log.LogLevel) string {
-	switch level {
-	case log.DEBUG:
-		return "DEBUG"
-	case log.INFO:
-		return "INFO"
-	case log.WARN:
-		return "WARN"
-	case log.ERROR:
-		return "ERROR"
-	case log.FATAL:
-		return "FATAL"
-	default:
-		return "UNKNOWN"
-	}
+	logger.Info("rendered by a custom encoder")
+	logger.InfoContext(context.Background(), "context-aware too")
 }

@@ -1,3 +1,4 @@
+// Demonstrates reconfiguring a running logger from a channel of configs.
 package main
 
 import (
@@ -9,24 +10,27 @@ import (
 )
 
 func main() {
-	cfg := log.DefaultConfig()
-	logger := log.ApplyConfig(cfg)
+	logger, err := log.New()
+	if err != nil {
+		panic(err)
+	}
 	defer logger.Close()
 
-	logger.Info("This is printed in text format")
+	logger.Info("this line is text")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	configs := make(chan log.LoggerConfig, 1)
-	go log.ReloadLoggerFromChannel(ctx, logger, configs, func(err error) {
+	configs := make(chan log.Config, 1)
+	go logger.ReloadFrom(ctx, configs, log.WatchErrorHandler(func(err error) {
 		fmt.Println("reconfigure failed:", err)
-	})
+	}))
 
-	cfg.Format = "json"
+	cfg := log.DefaultConfig()
+	cfg.Format = log.FormatJSON
 	configs <- cfg
 	close(configs)
 
 	time.Sleep(20 * time.Millisecond)
-	logger.Info("This is printed in JSON format using ReloadLoggerFromChannel")
+	logger.Info("this line is JSON", log.String("switched", "at runtime"))
 }

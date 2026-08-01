@@ -62,14 +62,14 @@ func TestInjectableClock(t *testing.T) {
 	clock := func() time.Time { return fixed }
 
 	var jb bytes.Buffer
-	jl := log.NewLogger(&jb, log.INFO, &log.JSONFormatter{Now: clock})
+	jl := log.Must(log.New(log.WithOutput(&jb), log.WithLevel(log.INFO), log.WithJSON(), log.WithClock(clock)))
 	jl.Info("x")
 	if !strings.Contains(jb.String(), "2020-01-02T03:04:05Z") {
 		t.Fatalf("JSON clock not injected: %q", jb.String())
 	}
 
 	var db bytes.Buffer
-	dl := log.NewLogger(&db, log.INFO, &log.DefaultFormatter{Now: clock, TimeLayout: "2006-01-02"})
+	dl := log.Must(log.New(log.WithOutput(&db), log.WithLevel(log.INFO), log.WithClock(clock), log.WithTimeFormat("2006-01-02")))
 	dl.Info("x")
 	if !strings.Contains(db.String(), "2020-01-02") {
 		t.Fatalf("Default clock not injected: %q", db.String())
@@ -78,9 +78,9 @@ func TestInjectableClock(t *testing.T) {
 
 func TestErrorVerbose(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	wrapped := fmt.Errorf("outer: %w", errors.New("inner cause"))
-	logger.InfoFields("failed", log.ErrorVerbose("error", wrapped))
+	logger.Info("failed", log.ErrorVerbose("error", wrapped))
 	out := buf.String()
 	if !strings.Contains(out, "outer") || !strings.Contains(out, "inner cause") {
 		t.Fatalf("expected full error chain, got %q", out)
@@ -89,8 +89,8 @@ func TestErrorVerbose(t *testing.T) {
 
 func TestConsoleFormatter(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.ConsoleFormatter{NoColor: true})
-	logger.InfoFields("hello", log.String("k", "v"), log.String("phrase", "two words"))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithConsole()))
+	logger.Info("hello", log.String("k", "v"), log.String("phrase", "two words"))
 	out := buf.String()
 	for _, want := range []string{"INFO", "hello", "k=v", `phrase="two words"`} {
 		if !strings.Contains(out, want) {
@@ -104,8 +104,7 @@ func TestConsoleFormatter(t *testing.T) {
 
 func TestPerLevelOutputs(t *testing.T) {
 	var main, errSink bytes.Buffer
-	logger := log.NewLogger(&main, log.DEBUG, &log.DefaultFormatter{IncludeCaller: false})
-	logger.AddLevelOutput(log.ERROR, &errSink)
+	logger := log.Must(log.New(log.WithOutput(&main), log.WithLevel(log.DEBUG), log.WithLevelOutput(log.ERROR, &errSink)))
 
 	logger.Info("just info")
 	if errSink.Len() != 0 {
@@ -128,7 +127,7 @@ func TestRequestIDHelpers(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	logger.InfoContext(ctx, "handling")
 	if !strings.Contains(buf.String(), "request_id=req-42") {
 		t.Fatalf("expected request_id emitted on context log, got %q", buf.String())
@@ -152,16 +151,16 @@ func TestTextFormatterDoesNotForgeLines(t *testing.T) {
 		name string
 		emit func(*log.Logger)
 	}{
-		{"field value", func(l *log.Logger) { l.InfoFields("login", log.String("user", forged)) }},
-		{"message", func(l *log.Logger) { l.InfoString(forged) }},
-		{"formatted args", func(l *log.Logger) { l.Info("login", forged) }},
-		{"error value", func(l *log.Logger) { l.InfoFields("login", log.Error("err", errString(forged))) }},
+		{"field value", func(l *log.Logger) { l.Info("login", log.String("user", forged)) }},
+		{"message", func(l *log.Logger) { l.Info(forged) }},
+		{"formatted message", func(l *log.Logger) { l.Infof("login %s", forged) }},
+		{"error value", func(l *log.Logger) { l.Info("login", log.Error("err", errString(forged))) }},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			l := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+			l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 			tc.emit(l)
 			if n := lineCount(buf.String()); n != 1 {
 				t.Errorf("entry spans %d lines, want 1:\n%s", n, buf.String())
@@ -175,8 +174,8 @@ func TestTextFormatterDoesNotForgeLines(t *testing.T) {
 
 func TestConsoleFormatterDoesNotForgeLines(t *testing.T) {
 	var buf bytes.Buffer
-	l := log.NewLogger(&buf, log.INFO, &log.ConsoleFormatter{NoColor: true})
-	l.InfoFields("login\nsecond line", log.String("user", "eve\nadmin"))
+	l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithConsole()))
+	l.Info("login\nsecond line", log.String("user", "eve\nadmin"))
 	if n := lineCount(buf.String()); n != 1 {
 		t.Errorf("entry spans %d lines, want 1:\n%s", n, buf.String())
 	}
@@ -185,8 +184,8 @@ func TestConsoleFormatterDoesNotForgeLines(t *testing.T) {
 // Ordinary values must not start getting quoted just because escaping exists.
 func TestTextFormatterLeavesPlainValuesAlone(t *testing.T) {
 	var buf bytes.Buffer
-	l := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
-	l.InfoFields("started", log.String("addr", "127.0.0.1:8080"), log.String("note", "with spaces"), log.Int("n", 3))
+	l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
+	l.Info("started", log.String("addr", "127.0.0.1:8080"), log.String("note", "with spaces"), log.Int("n", 3))
 
 	got := buf.String()
 	for _, want := range []string{"started", "addr=127.0.0.1:8080", "note=with spaces", "n=3"} {

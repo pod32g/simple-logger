@@ -35,10 +35,10 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestNewLogger verifies that a new logger instance is created correctly with the default formatter
+// TestNewLogger verifies that New builds a working logger with the default encoder
 func TestNewLogger(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 
 	logger.Info("Info message")
 
@@ -50,7 +50,7 @@ func TestNewLogger(t *testing.T) {
 // TestLogger_Debug verifies that the logger does not log debug messages if the level is higher than DEBUG
 func TestLogger_Debug(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 
 	logger.Debug("Debug message")
 
@@ -62,7 +62,7 @@ func TestLogger_Debug(t *testing.T) {
 // TestLogger_Info verifies that the logger logs info messages when the level is INFO
 func TestLogger_Info(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 
 	logger.Info("Info message")
 
@@ -73,10 +73,10 @@ func TestLogger_Info(t *testing.T) {
 
 func TestLogger_InfoStringAndInfo1(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 
-	logger.InfoString("plain message")
-	logger.Info1("value", 42)
+	logger.Info("plain message")
+	logger.Info("value", log.Any("value", 42))
 
 	output := buf.String()
 	if !containsLogMessage(output, "INFO", "plain message") {
@@ -89,9 +89,9 @@ func TestLogger_InfoStringAndInfo1(t *testing.T) {
 
 func TestLogger_InfoFieldsDefault(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 
-	logger.InfoFields("user login", log.String("user", "alice"), log.Int("attempt", 3))
+	logger.Info("user login", log.String("user", "alice"), log.Int("attempt", 3))
 
 	output := buf.String()
 	if !containsLogMessage(output, "INFO", "user login") {
@@ -104,9 +104,9 @@ func TestLogger_InfoFieldsDefault(t *testing.T) {
 
 func TestLogger_InfoFieldsJSON(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON()))
 
-	logger.InfoFields("user login", log.String("user", "alice"), log.Int("attempt", 3))
+	logger.Info("user login", log.String("user", "alice"), log.Int("attempt", 3))
 
 	var data map[string]interface{}
 	if err := json.Unmarshal(buf.Bytes(), &data); err != nil {
@@ -125,7 +125,7 @@ func TestLogger_InfoFieldsJSON(t *testing.T) {
 
 func TestLogger_InfoContext(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON()))
 
 	ctx := log.WithFields(context.Background(), log.String("request_id", "abc123"))
 	logger.InfoContext(ctx, "ctx message", log.Bool("authenticated", true))
@@ -147,16 +147,15 @@ func TestLogger_InfoContext(t *testing.T) {
 
 func TestLogger_CustomContextExtractor(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-
 	type ctxKey struct{}
 	key := ctxKey{}
-	logger.SetContextExtractor(func(ctx context.Context) []log.Field {
-		if val, ok := ctx.Value(key).(string); ok {
-			return []log.Field{log.String("span", val)}
-		}
-		return nil
-	})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO),
+		log.WithContextExtractor(func(ctx context.Context) []log.Field {
+			if val, ok := ctx.Value(key).(string); ok {
+				return []log.Field{log.String("span", val)}
+			}
+			return nil
+		})))
 
 	ctx := context.WithValue(context.Background(), key, "trace-1")
 	logger.InfoContext(ctx, "message")
@@ -169,10 +168,10 @@ func TestLogger_CustomContextExtractor(t *testing.T) {
 
 func TestLogger_ContextExtractorNilDisables(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO),
+		log.WithContextExtractor(nil)))
 
 	ctx := log.WithFields(context.Background(), log.String("request_id", "abc123"))
-	logger.SetContextExtractor(nil)
 	logger.InfoContext(ctx, "message")
 
 	output := buf.String()
@@ -183,10 +182,8 @@ func TestLogger_ContextExtractorNilDisables(t *testing.T) {
 
 func TestLogger_SamplerDropsEntries(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.SetSampler(log.SamplerFunc(func(level log.LogLevel, message string, fields []log.Field) bool {
-		return false
-	}))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO),
+		log.WithSampler(log.SamplerFunc(func(log.LogLevel, string, []log.Field) bool { return false }))))
 
 	logger.Info("should be dropped")
 
@@ -197,8 +194,7 @@ func TestLogger_SamplerDropsEntries(t *testing.T) {
 
 func TestLogger_EveryNSampler(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.SetSampler(log.NewEveryNSampler(2))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithSampler(log.NewEveryNSampler(2))))
 
 	logger.Info("first")
 	logger.Info("second")
@@ -219,7 +215,7 @@ func TestLogger_EveryNSampler(t *testing.T) {
 // TestLogger_Warn verifies that the logger logs warning messages when the level is WARN
 func TestLogger_Warn(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.WARN, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.WARN)))
 
 	logger.Warn("Warn message")
 
@@ -231,7 +227,7 @@ func TestLogger_Warn(t *testing.T) {
 // TestLogger_Error verifies that the logger logs error messages when the level is ERROR
 func TestLogger_Error(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.ERROR, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.ERROR)))
 
 	logger.Error("Error message")
 
@@ -243,7 +239,7 @@ func TestLogger_Error(t *testing.T) {
 // TestLogger_SetLevel verifies that the logger level can be changed
 func TestLogger_SetLevel(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.WARN, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.WARN)))
 
 	logger.SetLevel(log.INFO)
 	logger.Info("Info message")
@@ -256,7 +252,7 @@ func TestLogger_SetLevel(t *testing.T) {
 // TestLogger_JsonLogMessage verifies that the logger correctly logs messages in JSON format
 func TestLogger_JsonLogMessage(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON()))
 
 	logger.Info("JSON Info message")
 
@@ -268,7 +264,7 @@ func TestLogger_JsonLogMessage(t *testing.T) {
 // TestLogger_CustomFormatter verifies that the logger correctly logs messages using a custom formatter
 func TestLogger_CustomFormatter(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &MyCustomFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithEncoder(&MyCustomFormatter{})))
 
 	logger.Info("Custom Info message")
 
@@ -282,7 +278,7 @@ func TestLogger_CustomFormatter(t *testing.T) {
 func TestLogger_SetOutput(t *testing.T) {
 	var buf1 bytes.Buffer
 	var buf2 bytes.Buffer
-	logger := log.NewLogger(&buf1, log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf1), log.WithLevel(log.INFO)))
 	logger.SetOutput(&buf2)
 	logger.Info("changed")
 	if buf1.Len() != 0 {
@@ -296,8 +292,7 @@ func TestLogger_SetOutput(t *testing.T) {
 func TestLogger_SetOutputs(t *testing.T) {
 	var buf1 bytes.Buffer
 	var buf2 bytes.Buffer
-	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.SetOutputs(&buf1, &buf2)
+	logger := log.Must(log.New(log.WithOutput(io.Discard), log.WithLevel(log.INFO), log.WithOutputs(&buf1, &buf2)))
 	logger.Info("multi")
 
 	if buf1.Len() == 0 || buf2.Len() == 0 {
@@ -307,14 +302,14 @@ func TestLogger_SetOutputs(t *testing.T) {
 
 func TestLogger_Hook(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 
 	recorded := make([]string, 0)
 	logger.AddHook(log.HookFunc(func(level log.LogLevel, message string, fields []log.Field) {
 		recorded = append(recorded, fmt.Sprintf("%s:%s:%d", logLevelToString(level), message, len(fields)))
 	}))
 
-	logger.InfoFields("hook message", log.String("k", "v"))
+	logger.Info("hook message", log.String("k", "v"))
 
 	if len(recorded) != 1 {
 		t.Fatalf("expected hook to fire once, got %d", len(recorded))
@@ -326,8 +321,7 @@ func TestLogger_Hook(t *testing.T) {
 
 func TestLogger_IncludeStacktrace(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.ERROR, &log.DefaultFormatter{IncludeCaller: false})
-	logger.SetIncludeStacktrace(true)
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.ERROR), log.WithStacktrace()))
 
 	logger.Error("stack please")
 
@@ -346,15 +340,16 @@ func TestRegisterFieldEncoder(t *testing.T) {
 	)
 
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.InfoFields("encoded", log.Any("ct", customType{"foo"}))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
+	logger.Info("encoded", log.Any("ct", customType{"foo"}))
 	if !strings.Contains(buf.String(), "custom:foo") {
 		t.Fatalf("expected custom encoder output, got %q", buf.String())
 	}
 
+	// The same registered encoder must apply under a different output encoding.
 	buf.Reset()
-	logger.SetFormatter(&log.JSONFormatter{IncludeCaller: false})
-	logger.InfoFields("encoded", log.Any("ct", customType{"bar"}))
+	jsonLogger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON()))
+	jsonLogger.Info("encoded", log.Any("ct", customType{"bar"}))
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
@@ -368,11 +363,10 @@ func TestRegisterFieldEncoder(t *testing.T) {
 
 func TestLogger_AsyncLogging(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 8})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithAsyncQueue(8)))
 
 	logger.Info("async message")
-	logger.DisableAsync()
+	logger.Close()
 
 	if !strings.Contains(buf.String(), "async message") {
 		t.Fatalf("expected async message to be flushed, got %q", buf.String())
@@ -383,8 +377,7 @@ func TestLogger_AsyncDrop(t *testing.T) {
 	// Gate the worker on its first write so the queue state is deterministic
 	// rather than racing the worker (which made this test flaky).
 	g := newGatedWriter()
-	logger := log.NewLogger(g, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 1, DropStrategy: log.DropNew})
+	logger := log.Must(log.New(log.WithOutput(g), log.WithLevel(log.INFO), log.WithAsyncQueue(1)))
 
 	logger.Info("first") // worker pulls this and parks inside Write
 	<-g.started          // queue is now empty, worker parked
@@ -397,7 +390,7 @@ func TestLogger_AsyncDrop(t *testing.T) {
 	}
 
 	close(g.release)
-	logger.DisableAsync()
+	logger.Close()
 
 	output := g.String()
 	if !strings.Contains(output, "first") || !strings.Contains(output, "second") {
@@ -410,8 +403,7 @@ func TestLogger_AsyncDrop(t *testing.T) {
 
 func TestLogger_AsyncBatchingFlushesOnBatchSize(t *testing.T) {
 	var buf lockedBuffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 8, BatchSize: 3})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithAsyncQueue(8), log.WithAsyncBatch(3, 0)))
 
 	logger.Info("batch-one")
 	logger.Info("batch-two")
@@ -426,7 +418,7 @@ func TestLogger_AsyncBatchingFlushesOnBatchSize(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	logger.DisableAsync()
+	logger.Close()
 	out := buf.String()
 	if !strings.Contains(out, "batch-one") || !strings.Contains(out, "batch-two") || !strings.Contains(out, "batch-three") {
 		t.Fatalf("expected batched messages to flush, got %q", out)
@@ -435,8 +427,7 @@ func TestLogger_AsyncBatchingFlushesOnBatchSize(t *testing.T) {
 
 func TestLogger_AsyncFlushInterval(t *testing.T) {
 	var buf lockedBuffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{IncludeCaller: false})
-	logger.EnableAsync(log.AsyncOptions{QueueSize: 4, BatchSize: 5, FlushInterval: 15 * time.Millisecond})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithAsyncQueue(4), log.WithAsyncBatch(5, 15*time.Millisecond)))
 
 	logger.Info("interval-message")
 
@@ -449,39 +440,36 @@ func TestLogger_AsyncFlushInterval(t *testing.T) {
 	}
 
 	if !strings.Contains(buf.String(), "interval-message") {
-		logger.DisableAsync()
+		logger.Close()
 		t.Fatalf("expected message flushed by interval, got %q", buf.String())
 	}
 
-	logger.DisableAsync()
+	logger.Close()
 }
 
-// TestLogger_SetFormatter verifies that changing the formatter changes output format
-func TestLogger_SetFormatter(t *testing.T) {
+// TestLogger_EncoderOption verifies that WithEncoder selects the encoding.
+func TestLogger_EncoderOption(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
-	logger.SetFormatter(&log.JSONFormatter{})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithEncoder(&log.JSONFormatter{})))
 	logger.Info("json msg")
 	if !isValidJSON(buf.String()) {
 		t.Errorf("expected JSON formatted message, got %v", buf.String())
 	}
 }
 
-func TestLogger_SetSynchronized(t *testing.T) {
-	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.INFO, &log.DefaultFormatter{})
-	if !logger.Synchronized() {
-		t.Fatalf("expected synchronized writes by default")
-	}
-	logger.SetSynchronized(false)
-	if logger.Synchronized() {
-		t.Fatalf("expected unsynchronized writes after disabling")
+// An unsynchronized logger still writes; it just does not serialise writers.
+func TestLogger_Unsynchronized(t *testing.T) {
+	var buf lockedBuffer
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithUnsynchronized()))
+	logger.Info("unsynchronized line")
+	if !strings.Contains(buf.String(), "unsynchronized line") {
+		t.Errorf("expected the entry to be written, got %q", buf.String())
 	}
 }
 
 func TestLogger_ConcurrentLogging(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{IncludeCaller: false})
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG)))
 	const goroutines = 8
 	const perGoroutine = 50
 	var wg sync.WaitGroup
@@ -527,7 +515,7 @@ func TestLogger_ConcurrentLogging(t *testing.T) {
 }
 
 func TestLoggerCloseReleasesCloser(t *testing.T) {
-	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(io.Discard), log.WithLevel(log.INFO)))
 	cw := &closingBuffer{}
 	logger.SetOutputWithCloser(cw, cw)
 	if err := logger.Close(); err != nil {
@@ -539,7 +527,7 @@ func TestLoggerCloseReleasesCloser(t *testing.T) {
 }
 
 func TestLoggerSetOutputReplacesCloser(t *testing.T) {
-	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(io.Discard), log.WithLevel(log.INFO)))
 	cw := &closingBuffer{}
 	logger.SetOutputWithCloser(cw, cw)
 	logger.SetOutput(io.Discard)
@@ -637,7 +625,7 @@ func TestFormattedMethods(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			l := log.NewLogger(&buf, log.DEBUG, &log.DefaultFormatter{})
+			l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.DEBUG)))
 			tc.emit(l)
 			got := buf.String()
 			if !strings.Contains(got, "n=3 s=x") {
@@ -654,7 +642,7 @@ func TestFormattedMethods(t *testing.T) {
 // to be dropped on level.
 func TestFormattedMethodsSkipFormattingWhenDisabled(t *testing.T) {
 	var buf bytes.Buffer
-	l := log.NewLogger(&buf, log.ERROR, &log.DefaultFormatter{})
+	l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.ERROR)))
 
 	formatted := 0
 	arg := stringerFunc(func() string { formatted++; return "expensive" })
@@ -682,8 +670,9 @@ func TestFormattedMethodsSkipFormattingWhenDisabled(t *testing.T) {
 // redaction and hooks all still apply.
 func TestFormattedMessagesGoThroughTheNormalPath(t *testing.T) {
 	var buf bytes.Buffer
-	l := log.NewLogger(&buf, log.INFO, &log.JSONFormatter{}).With(log.String("component", "api"))
-	l.SetRedactor(log.NewPatternScrubber(regexp.MustCompile(`secret-\w+`)))
+	l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON(),
+		log.WithRedactor(log.NewPatternScrubber(regexp.MustCompile(`secret-\w+`))))).
+		With(log.String("component", "api"))
 
 	var hooked string
 	l.AddHook(log.HookFunc(func(_ log.LogLevel, msg string, _ []log.Field) { hooked = msg }))
@@ -708,9 +697,9 @@ func (f stringerFunc) String() string { return f() }
 
 func TestFatalfExitsAfterLogging(t *testing.T) {
 	if os.Getenv("FATALF_CHILD") == "1" {
-		l := log.NewLogger(os.Stdout, log.INFO, &log.DefaultFormatter{})
+		l := log.Must(log.New(log.WithOutput(os.Stdout), log.WithLevel(log.INFO)))
 		l.Fatalf("stopping after %d retries", 3)
-		l.InfoString("unreachable")
+		l.Info("unreachable")
 		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=TestFatalfExitsAfterLogging")
@@ -757,8 +746,7 @@ func TestSupersededWriterIsClosedOnReplacement(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			first := &countingCloser{}
-			l := log.NewLogger(first, log.INFO, &log.DefaultFormatter{})
-			l.SetSynchronized(synchronized)
+			l := log.Must(log.New(log.WithOutput(first), log.WithLevel(log.INFO)))
 			l.SetOutputWithCloser(first, first)
 
 			var writers []*countingCloser
@@ -766,7 +754,7 @@ func TestSupersededWriterIsClosedOnReplacement(t *testing.T) {
 				next := &countingCloser{}
 				writers = append(writers, next)
 				l.SetOutputWithCloser(next, next)
-				l.InfoString("after swap")
+				l.Info("after swap")
 			}
 
 			if got := first.closed.Load(); got != 1 {
@@ -794,8 +782,7 @@ func TestSupersededWriterIsClosedOnReplacement(t *testing.T) {
 // Swapping the output while unsynchronized writers are in flight must not close
 // a writer somebody is still writing to.
 func TestConcurrentWritesDuringOutputSwap(t *testing.T) {
-	l := log.NewLogger(&countingCloser{}, log.INFO, &log.DefaultFormatter{})
-	l.SetSynchronized(false)
+	l := log.Must(log.New(log.WithOutput(&countingCloser{}), log.WithLevel(log.INFO), log.WithUnsynchronized()))
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -808,7 +795,7 @@ func TestConcurrentWritesDuringOutputSwap(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					l.InfoString("concurrent")
+					l.Info("concurrent")
 				}
 			}
 		}()

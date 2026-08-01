@@ -28,8 +28,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.EnableCaller {
 		t.Errorf("expected EnableCaller false")
 	}
-	if !cfg.SyncWrites {
-		t.Errorf("expected SyncWrites true")
+	if cfg.Unsynchronized {
+		t.Errorf("expected writes to be synchronized by default")
 	}
 }
 
@@ -64,8 +64,8 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.EnableCaller {
 		t.Errorf("expected EnableCaller false")
 	}
-	if cfg.SyncWrites {
-		t.Errorf("expected SyncWrites false")
+	if !cfg.Unsynchronized {
+		t.Errorf("expected LOG_SYNC_WRITES=false to set Unsynchronized")
 	}
 	if !cfg.Colorize {
 		t.Errorf("expected Colorize true")
@@ -76,7 +76,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if !cfg.IncludeStacktrace {
 		t.Errorf("expected IncludeStacktrace true")
 	}
-	if cfg.Rotation.Enable {
+	if cfg.Rotate {
 		t.Errorf("expected rotation disabled by default when LOG_ROTATE not set")
 	}
 }
@@ -106,21 +106,28 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 }
 
-func TestUpdateLogLevelAndFormat(t *testing.T) {
+// The UpdateLogLevel/UpdateLogFormat setters are gone: assigning the fields is
+// shorter and clearer. What matters is that an assigned Config builds the
+// logger it describes.
+func TestConfigFieldsDriveTheLogger(t *testing.T) {
+	var buf bytes.Buffer
 	cfg := log.DefaultConfig()
-	cfg.UpdateLogLevel(log.DEBUG)
-	cfg.UpdateLogFormat("json")
-	if cfg.Level != log.DEBUG {
-		t.Errorf("expected level DEBUG, got %v", cfg.Level)
-	}
-	if cfg.Format != "json" {
-		t.Errorf("expected format json, got %s", cfg.Format)
+	cfg.Level = log.DEBUG
+	cfg.Format = log.FormatJSON
+
+	logger := log.Must(log.FromConfig(cfg))
+	logger.SetOutput(&buf)
+	logger.Debug("visible at debug")
+
+	out := buf.String()
+	if !strings.Contains(out, `"level":"DEBUG"`) || !strings.Contains(out, `"message":"visible at debug"`) {
+		t.Errorf("expected a JSON debug entry, got %q", out)
 	}
 }
 
 func TestApplyConfigText(t *testing.T) {
 	cfg := log.DefaultConfig()
-	logger := log.ApplyConfig(cfg)
+	logger := log.Must(log.FromConfig(cfg))
 	var buf bytes.Buffer
 	logger.SetOutput(&buf)
 	logger.Info("hello")
@@ -131,8 +138,8 @@ func TestApplyConfigText(t *testing.T) {
 
 func TestApplyConfigJSON(t *testing.T) {
 	cfg := log.DefaultConfig()
-	cfg.Format = "json"
-	logger := log.ApplyConfig(cfg)
+	cfg.Format = log.FormatJSON
+	logger := log.Must(log.FromConfig(cfg))
 	var buf bytes.Buffer
 	logger.SetOutput(&buf)
 	logger.Info("hello")
@@ -144,8 +151,8 @@ func TestApplyConfigJSON(t *testing.T) {
 func TestApplyConfigCustomFormatter(t *testing.T) {
 	cfg := log.DefaultConfig()
 	cfg.Format = "custom"
-	cfg.Custom = &testFormatter{}
-	logger := log.ApplyConfig(cfg)
+	cfg.Encoder = &testFormatter{}
+	logger := log.Must(log.FromConfig(cfg))
 	var buf bytes.Buffer
 	logger.SetOutput(&buf)
 	logger.Info("msg")
@@ -154,16 +161,19 @@ func TestApplyConfigCustomFormatter(t *testing.T) {
 	}
 }
 
-func TestApplyConfigSyncWrites(t *testing.T) {
+// Unsynchronized writes still reach the output; the config field only controls
+// whether the logger serialises them.
+func TestConfigUnsynchronizedStillWrites(t *testing.T) {
+	var buf lockedBuffer
 	cfg := log.DefaultConfig()
-	cfg.SyncWrites = false
-	logger := log.ApplyConfig(cfg)
-	if logger.Synchronized() {
-		t.Fatalf("expected logger to disable synchronized writes")
-	}
-	logger.SetSynchronized(true)
-	if !logger.Synchronized() {
-		t.Fatalf("expected to re-enable synchronized writes")
+	cfg.Unsynchronized = true
+
+	logger := log.Must(log.FromConfig(cfg))
+	logger.SetOutput(&buf)
+	logger.Info("unsynchronized")
+
+	if !strings.Contains(buf.String(), "unsynchronized") {
+		t.Errorf("expected the entry to be written, got %q", buf.String())
 	}
 }
 
@@ -178,7 +188,7 @@ func TestApplyConfigFileOutput(t *testing.T) {
 	file := filepath.Join(dir, "log.txt")
 	cfg := log.DefaultConfig()
 	cfg.Output = file
-	logger := log.ApplyConfig(cfg)
+	logger := log.Must(log.FromConfig(cfg))
 	logger.Info("file message")
 	if err := logger.Close(); err != nil {
 		t.Fatalf("failed to close logger: %v", err)
@@ -204,7 +214,7 @@ func TestApplyConfigFileOutput(t *testing.T) {
 func TestApplyConfigDisableCaller(t *testing.T) {
 	cfg := log.DefaultConfig()
 	cfg.EnableCaller = false
-	logger := log.ApplyConfig(cfg)
+	logger := log.Must(log.FromConfig(cfg))
 	var buf bytes.Buffer
 	logger.SetOutput(&buf)
 	logger.Info("msg")
@@ -241,27 +251,27 @@ func TestLoadConfigFromEnvRotation(t *testing.T) {
 	t.Setenv("LOG_ROTATE_COMPRESS", "false")
 
 	cfg := log.LoadConfigFromEnv()
-	if !cfg.Rotation.Enable {
+	if !cfg.Rotate {
 		t.Fatalf("expected rotation enabled")
 	}
-	if cfg.Rotation.MaxSize != 10 {
-		t.Fatalf("expected MaxSize 10, got %d", cfg.Rotation.MaxSize)
+	if cfg.Rotation.MaxSizeMB != 10 {
+		t.Fatalf("expected MaxSize 10, got %d", cfg.Rotation.MaxSizeMB)
 	}
-	if cfg.Rotation.MaxAge != 5 {
-		t.Fatalf("expected MaxAge 5, got %d", cfg.Rotation.MaxAge)
+	if cfg.Rotation.MaxAgeDays != 5 {
+		t.Fatalf("expected MaxAge 5, got %d", cfg.Rotation.MaxAgeDays)
 	}
 	if cfg.Rotation.MaxBackups != 3 {
 		t.Fatalf("expected MaxBackups 3, got %d", cfg.Rotation.MaxBackups)
 	}
-	if cfg.Rotation.Compress {
-		t.Fatalf("expected Compress false")
+	if !cfg.Rotation.NoCompress {
+		t.Fatalf("expected LOG_ROTATE_COMPRESS=false to set NoCompress")
 	}
 }
 
 func TestConfigureLoggerColorize(t *testing.T) {
 	cfg := log.DefaultConfig()
 	cfg.Colorize = true
-	logger := log.ApplyConfig(cfg)
+	logger := log.Must(log.FromConfig(cfg))
 	defer logger.Close()
 
 	var buf bytes.Buffer
@@ -274,12 +284,12 @@ func TestConfigureLoggerColorize(t *testing.T) {
 }
 
 func TestConfigureLoggerSwitchFormat(t *testing.T) {
-	logger := log.NewLogger(io.Discard, log.INFO, &log.DefaultFormatter{})
+	logger := log.Must(log.New(log.WithOutput(io.Discard), log.WithLevel(log.INFO)))
 	defer logger.Close()
 
 	cfg := log.DefaultConfig()
-	cfg.Format = "json"
-	_, err := log.ConfigureLogger(logger, cfg)
+	cfg.Format = log.FormatJSON
+	_, err := logger, logger.Apply(cfg)
 	if err != nil {
 		t.Fatalf("configure logger: %v", err)
 	}
@@ -296,7 +306,7 @@ func TestConfigureLoggerTimeFormatAndStacktrace(t *testing.T) {
 	cfg := log.DefaultConfig()
 	cfg.TimeFormat = "2006-01-02"
 	cfg.IncludeStacktrace = true
-	logger := log.ApplyConfig(cfg)
+	logger := log.Must(log.FromConfig(cfg))
 	defer logger.Close()
 
 	var buf bytes.Buffer
@@ -319,9 +329,9 @@ func TestConfigureLoggerTimeFormatAndStacktrace(t *testing.T) {
 func TestConfigureLoggerRotation(t *testing.T) {
 	cfg := log.DefaultConfig()
 	cfg.Output = filepath.Join(t.TempDir(), "rotating.log")
-	cfg.Rotation = log.RotationConfig{Enable: true, MaxSize: 1}
+	cfg.Rotation = log.Rotation{MaxSizeMB: 1}
 
-	logger, err := log.ConfigureLogger(nil, cfg)
+	logger, err := log.FromConfig(cfg)
 	if err != nil {
 		t.Fatalf("configure logger: %v", err)
 	}
