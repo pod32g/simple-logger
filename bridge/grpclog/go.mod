@@ -5,7 +5,7 @@ module github.com/pod32g/simple-logger/bridge/grpclog
 go 1.25.0
 
 require (
-	github.com/pod32g/simple-logger v0.8.1
+	github.com/pod32g/simple-logger v0.8.2
 	google.golang.org/grpc v1.82.1
 )
 

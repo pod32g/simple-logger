@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+
+## [0.8.2] - 2026-07-31
+
+No change to the library itself: the code is identical to 0.8.1. This releases
+the dependency fix in the gRPC bridge module, which is versioned separately as
+`bridge/grpclog/v0.8.2`.
+
 ### Security
 - The gRPC bridge module carried `golang.org/x/net` v0.53.0 and
   `golang.org/x/text` v0.36.0 — older than the versions the root module had
