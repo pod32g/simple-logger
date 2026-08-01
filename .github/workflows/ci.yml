@@ -45,7 +45,7 @@ jobs:
           find example -name go.mod -print0 | while IFS= read -r -d '' mod; do
             dir=$(dirname "$mod")
             echo "::group::$dir"
-            (cd "$dir" && go build ./... && go vet ./...)
+            (cd "$dir" && go build -o "$(mktemp -d)/" ./... && go vet ./...)
             echo "::endgroup::"
           done
 

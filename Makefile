@@ -22,7 +22,7 @@ build-examples: ## Build examples that carry their own go.mod
 	@find example -name go.mod -print0 | while IFS= read -r -d '' mod; do \
 		dir=$$(dirname "$$mod"); \
 		echo "  building $$dir"; \
-		(cd "$$dir" && $(GO) build ./... && $(GO) vet ./...) || exit 1; \
+		(cd "$$dir" && $(GO) build -o "$$(mktemp -d)/" ./... && $(GO) vet ./...) || exit 1; \
 	done
 
 .PHONY: test

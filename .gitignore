@@ -33,3 +33,9 @@ go.work
 .DS_Store
 
 ROADMAP.md
+
+# Compiled example binaries (a main package builds into its own directory)
+example/*/[a-z_]*
+!example/*/*.go
+!example/*/go.mod
+!example/*/go.sum
