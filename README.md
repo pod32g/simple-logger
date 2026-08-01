@@ -19,6 +19,100 @@ go get github.com/pod32g/simple-logger
 
 Requires Go 1.25 or later.
 
+## What it looks like
+
+Out of the box — text to stdout at `INFO`, no configuration:
+
+```go
+logger.Info("server started", log.String("addr", ":8080"))
+logger.Warn("cache degraded", log.Int("hit_rate", 42))
+logger.Error("upstream failed", log.Err("error", err), log.Duration("elapsed", 1500*time.Millisecond))
+logger.Info("plain message with no fields")
+```
+
+```text
+2026-08-01 09:41:22 - [INFO] server started addr=:8080
+2026-08-01 09:41:22 - [WARN] cache degraded hit_rate=42
+2026-08-01 09:41:22 - [ERROR] upstream failed error=connection refused elapsed=1.5s
+2026-08-01 09:41:22 - [INFO] plain message with no fields
+```
+
+All seven levels:
+
+```text
+2026-08-01 09:41:22 - [TRACE] entering handler
+2026-08-01 09:41:22 - [DEBUG] query planned rows=128
+2026-08-01 09:41:22 - [INFO] request served
+2026-08-01 09:41:22 - [WARN] slow response took=2s
+2026-08-01 09:41:22 - [ERROR] write failed
+```
+
+With `WithJSON()` — one object per line, and every entry parses no matter what
+the values contain:
+
+```text
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"server started","addr":":8080","tls":true}
+{"timestamp":"2026-08-01T09:41:22Z","level":"ERROR","message":"upstream failed","error":"connection refused","status":502}
+```
+
+With `WithCaller()` — the file and line that logged, resolved on the goroutine
+that logged even in async mode:
+
+```text
+2026-08-01 09:41:22 - main.go:42 - [INFO] with call site
+```
+
+With `WithConsole()` — for a terminal. Dimmed timestamp, coloured and padded
+level, values quoted when they contain spaces (colour not shown here):
+
+```text
+09:41:22.461 INFO  server started addr=:8080
+09:41:22.461 WARN  cache degraded note="with spaces"
+09:41:22.461 ERROR upstream failed error="connection refused"
+```
+
+### Groups, derived loggers, redaction
+
+`log.Group` nests in JSON and flattens with a dotted prefix in text, so a
+line-oriented record stays one line:
+
+```go
+logger.Info("request", log.String("id", "req-42"),
+    log.Group("http", log.String("method", "GET"), log.Int("status", 200)))
+```
+
+```text
+2026-08-01 09:41:22 - [INFO] request id=req-42 http.method=GET http.status=200
+```
+
+```text
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"request","id":"req-42","http":{"method":"GET","status":200,"client":{"ip":"10.0.0.1"}}}
+```
+
+A derived logger carries its bound fields on everything it emits:
+
+```go
+reqLogger := logger.With(log.String("request_id", "req-42")).Named("http")
+reqLogger.Info("handling")
+reqLogger.Info("complete", log.Int("status", 200))
+```
+
+```text
+2026-08-01 09:41:22 - [INFO] handling logger=http request_id=req-42
+2026-08-01 09:41:22 - [INFO] complete logger=http request_id=req-42 status=200
+```
+
+A redactor masks matching fields before the encoder or any hook sees them:
+
+```go
+log.New(log.WithRedactor(log.NewKeyRedactor("password")))
+logger.Info("login", log.String("user", "alice"), log.String("password", "hunter2"))
+```
+
+```text
+2026-08-01 09:41:22 - [INFO] login user=alice password=[REDACTED]
+```
+
 ## Getting started
 
 The package-level functions log through a default logger writing text to stdout
@@ -80,15 +174,8 @@ log.Float32, log.Float64, log.Bool, log.Duration, log.Time, log.Stringer
 log.Binary, log.Err, log.ErrorVerbose, log.Any
 ```
 
-`log.Group` nests fields — a JSON object, or a dotted prefix in text output:
-
-```go
-logger.Info("request", log.Group("http",
-    log.String("method", "GET"),
-    log.Int("status", 200)))
-// {"message":"request","http":{"method":"GET","status":200}}
-// 2026-07-31 12:00:00 - [INFO] request http.method=GET http.status=200
-```
+`log.Group` nests fields — a JSON object, or a dotted prefix in text output.
+See [What it looks like](#what-it-looks-like) for both.
 
 `log.Lazy` defers work until the entry is known to be emitted, so a dropped
 entry costs nothing:

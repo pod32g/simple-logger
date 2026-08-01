@@ -55,21 +55,30 @@ type TextEncoder struct {
 }
 
 func (e *TextEncoder) Encode(buf []byte, entry Entry) []byte {
+	// Prefix parts are joined with " - ", and any of them may be absent: an
+	// entry can carry no timestamp (a slog record that has none) and no caller.
+	sep := false
 	if !entry.Time.IsZero() {
 		if e.TimeLayout != "" {
 			buf = entry.Time.AppendFormat(buf, e.TimeLayout)
 		} else {
 			buf = appendTimestamp(buf, entry.Time)
 		}
-		buf = append(buf, ' ', '-')
+		sep = true
 	}
 	if !entry.Caller.Zero() {
-		buf = append(buf, ' ')
+		if sep {
+			buf = append(buf, ' ', '-', ' ')
+		}
 		buf = append(buf, entry.Caller.File...)
 		buf = append(buf, ':')
 		buf = strconv.AppendInt(buf, int64(entry.Caller.Line), 10)
+		sep = true
 	}
-	buf = append(buf, ' ', '[')
+	if sep {
+		buf = append(buf, ' ', '-', ' ')
+	}
+	buf = append(buf, '[')
 	color := ""
 	if e.Colorize {
 		color = levelColors[entry.Level]
