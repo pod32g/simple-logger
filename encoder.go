@@ -210,10 +210,22 @@ func appendFourDigits(b []byte, val int) []byte {
 	return append(b, byte('0'+val/1000), byte('0'+val/100%10), byte('0'+val/10%10), byte('0'+val%10))
 }
 
-// appendTextSafe writes s, quoting it when it holds a control character. A raw
-// newline would end the record and let whatever follows read as a genuine entry.
+// appendTextSafe writes a message, quoting it when it holds a control
+// character. A raw newline would end the record and let whatever follows read
+// as a genuine entry. Messages are free text, so spaces alone do not quote.
 func appendTextSafe(buf []byte, s string) []byte {
 	if !containsControl(s) {
+		return append(buf, s...)
+	}
+	return strconv.AppendQuote(buf, s)
+}
+
+// appendValueQuoted writes a field value, quoting it unless it is a bare token.
+// key=value output is only unambiguous if a value cannot contain the characters
+// that separate fields: "err=connection refused" reads as two fields, and an
+// empty value reads as none at all.
+func appendValueQuoted(buf []byte, s string) []byte {
+	if s != "" && !containsAny(s, " \t\n\r\"=") && !containsControl(s) {
 		return append(buf, s...)
 	}
 	return strconv.AppendQuote(buf, s)
@@ -269,11 +281,11 @@ func joinKey(prefix, key string) string {
 
 func appendValueText(buf []byte, val interface{}, codecs *fieldCodecs) []byte {
 	if s, ok := codecs.text(val); ok {
-		return appendTextSafe(buf, s)
+		return appendValueQuoted(buf, s)
 	}
 	switch v := val.(type) {
 	case string:
-		return appendTextSafe(buf, v)
+		return appendValueQuoted(buf, v)
 	case int:
 		return strconv.AppendInt(buf, int64(v), 10)
 	case int64:
@@ -291,33 +303,26 @@ func appendValueText(buf []byte, val interface{}, codecs *fieldCodecs) []byte {
 	case nil:
 		return append(buf, "null"...)
 	case fmt.Stringer:
-		return appendTextSafe(buf, v.String())
+		return appendValueQuoted(buf, v.String())
 	case error:
-		return appendTextSafe(buf, v.Error())
+		return appendValueQuoted(buf, v.Error())
 	default:
-		return appendTextSafe(buf, fmt.Sprint(v))
+		return appendValueQuoted(buf, fmt.Sprint(v))
 	}
 }
 
 func appendConsoleValue(buf []byte, val interface{}, codecs *fieldCodecs) []byte {
 	if s, ok := codecs.text(val); ok {
-		return appendMaybeQuoted(buf, s)
+		return appendValueQuoted(buf, s)
 	}
 	switch v := val.(type) {
 	case string:
-		return appendMaybeQuoted(buf, v)
+		return appendValueQuoted(buf, v)
 	case nil:
 		return append(buf, "null"...)
 	default:
-		return appendMaybeQuoted(buf, fmt.Sprint(val))
+		return appendValueQuoted(buf, fmt.Sprint(val))
 	}
-}
-
-func appendMaybeQuoted(buf []byte, s string) []byte {
-	if s == "" || containsAny(s, " \t\n\"=") {
-		return strconv.AppendQuote(buf, s)
-	}
-	return append(buf, s...)
 }
 
 func containsAny(s, chars string) bool {

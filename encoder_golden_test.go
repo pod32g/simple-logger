@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -204,4 +205,80 @@ func compareGolden(t *testing.T, path string, got []byte) {
 				path, i+1, w, g)
 		}
 	}
+}
+
+// The reason values are quoted: key=value output is only useful if a consumer
+// can split it back apart. This asserts the property rather than the bytes, so
+// it keeps holding if the format is adjusted again.
+func TestTextValuesSplitBackApart(t *testing.T) {
+	entry := log.Entry{Level: log.INFO, Message: "note", Time: goldenTime(), Fields: []log.Field{
+		log.String("err", "connection refused"),
+		log.String("empty", ""),
+		log.String("quoted", `say "hi"`),
+		log.String("equals", "a=b"),
+		log.String("addr", ":8080"),
+		log.Int("n", 3),
+	}}
+
+	for name, enc := range map[string]log.Encoder{
+		"text":    &log.TextEncoder{},
+		"console": &log.ConsoleEncoder{NoColor: true},
+	} {
+		line := strings.TrimRight(string(enc.Encode(nil, entry)), "\n")
+		got := map[string]string{}
+		for _, tok := range splitOutsideQuotes(line) {
+			k, v, ok := strings.Cut(tok, "=")
+			if !ok {
+				continue
+			}
+			if unquoted, err := strconv.Unquote(v); err == nil {
+				v = unquoted
+			}
+			got[k] = v
+		}
+		for _, want := range []struct{ k, v string }{
+			{"err", "connection refused"},
+			{"empty", ""},
+			{"quoted", `say "hi"`},
+			{"equals", "a=b"},
+			{"addr", ":8080"},
+			{"n", "3"},
+		} {
+			if got[want.k] != want.v {
+				t.Errorf("%s: %s = %q, want %q (line: %s)", name, want.k, got[want.k], want.v, line)
+			}
+		}
+	}
+}
+
+// splitOutsideQuotes splits on spaces that are not inside a quoted value.
+func splitOutsideQuotes(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote, escaped := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case escaped:
+			escaped = false
+			cur.WriteByte(c)
+		case c == '\\' && inQuote:
+			escaped = true
+			cur.WriteByte(c)
+		case c == '"':
+			inQuote = !inQuote
+			cur.WriteByte(c)
+		case c == ' ' && !inQuote:
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }

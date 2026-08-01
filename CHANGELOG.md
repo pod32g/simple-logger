@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Changed
+- **The text and console encoders quote field values that would otherwise make
+  `key=value` ambiguous** — a value containing a space, a quote, an `=`, or an
+  empty one. `err=connection refused` reads as two fields and `empty=` reads as
+  none; they are now `err="connection refused"` and `empty=""`. Messages are
+  free text and are still only quoted when they contain control characters.
+  The console encoder already did this; the two now share one rule.
 
 ## [0.8.0] - 2026-07-31
 

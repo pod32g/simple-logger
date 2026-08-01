@@ -160,7 +160,7 @@ func TestWithError(t *testing.T) {
 	sentinel := errors.New("upstream refused")
 	logger.WithError(sentinel).Error("request failed")
 
-	if !strings.Contains(buf.String(), "error=upstream refused") {
+	if !strings.Contains(buf.String(), `error="upstream refused"`) {
 		t.Errorf("expected the bound error, got %q", buf.String())
 	}
 }

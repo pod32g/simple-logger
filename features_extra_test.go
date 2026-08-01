@@ -181,14 +181,15 @@ func TestConsoleFormatterDoesNotForgeLines(t *testing.T) {
 	}
 }
 
-// Ordinary values must not start getting quoted just because escaping exists.
-func TestTextFormatterLeavesPlainValuesAlone(t *testing.T) {
+// Bare tokens stay unquoted; only values that would make key=value ambiguous
+// get quotes.
+func TestTextFormatterQuotesOnlyAmbiguousValues(t *testing.T) {
 	var buf bytes.Buffer
 	l := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
 	l.Info("started", log.String("addr", "127.0.0.1:8080"), log.String("note", "with spaces"), log.Int("n", 3))
 
 	got := buf.String()
-	for _, want := range []string{"started", "addr=127.0.0.1:8080", "note=with spaces", "n=3"} {
+	for _, want := range []string{"started", "addr=127.0.0.1:8080", `note="with spaces"`, "n=3"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q: %s", want, got)
 		}

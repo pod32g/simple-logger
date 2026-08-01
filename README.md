@@ -101,7 +101,7 @@ logger.Error("upstream failed",
 ```
 
 ```text
-2026-08-01 09:41:22 - [ERROR] upstream failed error=connection refused elapsed=1.5s
+2026-08-01 09:41:22 - [ERROR] upstream failed error="connection refused" elapsed=1.5s
 ```
 
 `log.Group` nests fields — a JSON object, or a dotted prefix in text output, so
@@ -243,19 +243,21 @@ logger := log.Must(log.New(log.WithEncoder(logfmtEncoder{})))
 ```
 
 Built in: `TextEncoder` (the default), `JSONEncoder`, `ConsoleEncoder`. The same
-two entries through each of them:
+two entries through each of them. Text and console quote any value that would
+otherwise make `key=value` ambiguous — one containing a space, a quote, an `=`,
+or nothing at all — so a line can always be split back apart:
 
 ```text
 # TextEncoder
 2026-08-01 09:41:22 - [INFO] server started addr=:8080
-2026-08-01 09:41:22 - [ERROR] upstream failed error=connection refused
+2026-08-01 09:41:22 - [ERROR] upstream failed error="connection refused"
 
 # JSONEncoder — one object per line, valid whatever the values contain
 {"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"server started","addr":":8080"}
 {"timestamp":"2026-08-01T09:41:22Z","level":"ERROR","message":"upstream failed","error":"connection refused"}
 
-# ConsoleEncoder — dimmed timestamp, colored and padded level, values quoted
-# when they contain spaces (color not shown here)
+# ConsoleEncoder — dimmed timestamp, colored and padded level
+# (color not shown here)
 09:41:22.461 INFO  server started addr=:8080
 09:41:22.461 ERROR upstream failed error="connection refused"
 ```
