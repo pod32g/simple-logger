@@ -114,6 +114,22 @@ func Bool(key string, value bool) Field { return Field{Key: key, Value: value} }
 
 func Any(key string, value interface{}) Field { return Field{Key: key, Value: value} }
 
+// Group nests fields under a key: a JSON object, and a dotted prefix in text
+// output. It is what the slog bridge maps slog.Group onto.
+func Group(key string, fields ...Field) Field {
+	return Field{Key: key, Value: append([]Field(nil), fields...)}
+}
+
+// Lazy defers computing a value until the entry is known to be emitted, so an
+// expensive field costs nothing on an entry that a level or sampler drops.
+func Lazy(key string, fn func() interface{}) Field {
+	return Field{Key: key, Value: lazyValue{fn: fn}}
+}
+
+// lazyValue is resolved in normalizeFields, before redaction and hooks, so
+// everything downstream sees a plain value.
+type lazyValue struct{ fn func() interface{} }
+
 // Err records an error. It is named Err rather than Error so that the package
 // can offer Error as a logging function, which every comparable library does;
 // zerolog uses the same name for the same reason.
@@ -390,8 +406,30 @@ func (l *levelSampler) Allow(level LogLevel, message string, fields []Field) boo
 	return true
 }
 
+// EntryOption adjusts a single entry. It exists for bridges that already know
+// something the logger would otherwise derive -- slog hands over a record
+// carrying its own timestamp and program counter, and discarding those was a
+// conformance failure.
+type EntryOption func(*entryOverrides)
+
+type entryOverrides struct {
+	time   time.Time
+	caller *Caller
+}
+
+// EntryTime records the entry at t rather than at the moment it is encoded.
+func EntryTime(t time.Time) EntryOption {
+	return func(o *entryOverrides) { o.time = t }
+}
+
+// EntryCaller records an already-resolved call site.
+func EntryCaller(file string, line int) EntryOption {
+	return func(o *entryOverrides) { o.caller = &Caller{File: file, Line: line} }
+}
+
 type logRequest struct {
 	level   LogLevel
+	entryAt time.Time
 	message string
 	fields  []Field
 	caller  *Caller       // call site resolved by the producer, nil to resolve at format time
@@ -815,6 +853,19 @@ func Default() *Logger {
 // log.Info("ready") is the first line of nearly every getting-started guide in
 // the ecosystem, and needing log.Default().Info is friction with no upside.
 
+// Log emits an entry at the given level. The level methods are better for
+// ordinary code; this is for bridges that receive the level as data.
+func (l *Logger) Log(level LogLevel, message string, fields []Field, opts ...EntryOption) {
+	var ov *entryOverrides
+	if len(opts) > 0 {
+		ov = &entryOverrides{}
+		for _, opt := range opts {
+			opt(ov)
+		}
+	}
+	l.logEntry(level, message, fields, ov)
+}
+
 // Trace logs a message at TRACE on the default logger.
 func Trace(message string, fields ...Field) { Default().Trace(message, fields...) }
 
@@ -1091,6 +1142,7 @@ func (l *Logger) clearLevelOutputs() {
 // normalizeFields applies redaction, de-duplication, and value truncation. It
 // returns fields unchanged (no allocation) when none are configured.
 func (l *Logger) normalizeFields(fields []Field) []Field {
+	fields = resolveLazy(fields)
 	if rh := l.redactor.Load(); rh != nil && rh.r != nil {
 		fields = rh.r.Redact(fields)
 	}
@@ -1101,6 +1153,43 @@ func (l *Logger) normalizeFields(fields []Field) []Field {
 		fields = truncateFieldValues(fields, int(max))
 	}
 	return fields
+}
+
+// resolveLazy replaces deferred values with their result, recursing into
+// groups. It copies only when there is something to resolve.
+func resolveLazy(fields []Field) []Field {
+	if !hasLazy(fields) {
+		return fields
+	}
+	out := make([]Field, len(fields))
+	copy(out, fields)
+	for i := range out {
+		switch v := out[i].Value.(type) {
+		case lazyValue:
+			if v.fn != nil {
+				out[i].Value = v.fn()
+			} else {
+				out[i].Value = nil
+			}
+		case []Field:
+			out[i].Value = resolveLazy(v)
+		}
+	}
+	return out
+}
+
+func hasLazy(fields []Field) bool {
+	for _, f := range fields {
+		switch v := f.Value.(type) {
+		case lazyValue:
+			return true
+		case []Field:
+			if hasLazy(v) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // redactMessage scrubs and truncates the resolved message per configuration.
@@ -1226,7 +1315,7 @@ func (l *Logger) asyncWorker(st *asyncState) {
 				close(req.flush)
 				continue
 			}
-			l.logEntrySync(req.level, req.message, req.fields, req.caller)
+			l.logEntrySync(req.level, req.message, req.fields, req.caller, req.entryAt)
 		}
 		return
 	}
@@ -1270,7 +1359,7 @@ func (l *Logger) asyncWorker(st *asyncState) {
 
 	flush := func() {
 		for _, req := range batch {
-			l.logEntrySync(req.level, req.message, req.fields, req.caller)
+			l.logEntrySync(req.level, req.message, req.fields, req.caller, req.entryAt)
 		}
 		batch = batch[:0]
 		if flushInterval > 0 {
@@ -1461,7 +1550,7 @@ func basename(path string) string {
 	return path
 }
 
-func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, fields []Field, _ []Field) {
+func (l *Logger) logEntry(level LogLevel, message string, fields []Field, ov *entryOverrides) {
 	if level < LogLevel(l.level.Load()) {
 		return
 	}
@@ -1497,10 +1586,16 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 				fields:  cloneFields(fields),
 				caller:  l.resolveCallerForEntry(),
 			}
+			if ov != nil {
+				req.entryAt = ov.time
+				if ov.caller != nil {
+					req.caller = ov.caller
+				}
+			}
 			if l.enqueueAsync(req) {
 				return
 			}
-			l.logEntrySync(level, message, fields, req.caller)
+			l.logEntrySync(level, message, fields, req.caller, req.entryAt)
 			return
 		}
 	} else if l.async.Load() != nil {
@@ -1510,7 +1605,15 @@ func (l *Logger) logEntry(level LogLevel, message string, hasMessage bool, field
 	}
 
 	fields = l.withStacktrace(level, fields)
-	l.logEntrySync(level, message, fields, nil)
+	var at time.Time
+	var caller *Caller
+	if ov != nil {
+		at, caller = ov.time, ov.caller
+	}
+	if caller == nil {
+		caller = l.resolveCallerForEntry()
+	}
+	l.logEntrySync(level, message, fields, caller, at)
 }
 
 // withStacktrace appends the caller's stack for error-level entries when
@@ -1542,7 +1645,7 @@ func (l *Logger) resolveCallerForEntry() *Caller {
 	return &Caller{File: file, Line: line}
 }
 
-func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, caller *Caller) {
+func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, caller *Caller, at time.Time) {
 	eh := l.encoder.Load()
 	if eh == nil || eh.e == nil {
 		return
@@ -1582,13 +1685,13 @@ func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, ca
 		Level:   level,
 		Message: resolvedMessage,
 		Fields:  fields,
-		Time:    l.now(),
+		Time:    at,
+	}
+	if entry.Time.IsZero() {
+		entry.Time = l.now()
 	}
 	if caller != nil {
 		entry.Caller = *caller
-	} else if l.wantCaller.Load() {
-		file, line := resolveCaller(int(l.callerSkip.Load()))
-		entry.Caller = Caller{File: file, Line: line}
 	}
 
 	// One pooled buffer per entry, encoded once and written once. The encoder
@@ -1739,12 +1842,12 @@ func (l *Logger) logf(level LogLevel, format string, args ...interface{}) {
 	if level < LogLevel(l.level.Load()) {
 		return
 	}
-	l.logEntry(level, fmt.Sprintf(format, args...), true, nil, nil)
+	l.logEntry(level, fmt.Sprintf(format, args...), nil, nil)
 }
 
 // Trace logs a message at TRACE with optional structured fields.
 func (l *Logger) Trace(message string, fields ...Field) {
-	l.logEntry(TRACE, message, true, fields, nil)
+	l.logEntry(TRACE, message, fields, nil)
 }
 
 // Tracef logs a formatted message at TRACE. The message is formatted only
@@ -1755,12 +1858,12 @@ func (l *Logger) Tracef(format string, args ...interface{}) {
 
 // TraceContext logs at TRACE, adding any fields the context carries.
 func (l *Logger) TraceContext(ctx context.Context, message string, fields ...Field) {
-	l.logEntry(TRACE, message, true, l.mergeContextFields(ctx, fields), nil)
+	l.logEntry(TRACE, message, l.mergeContextFields(ctx, fields), nil)
 }
 
 // Panic logs a message at PANIC with optional structured fields and then panics.
 func (l *Logger) Panic(message string, fields ...Field) {
-	l.logEntry(PANIC, message, true, fields, nil)
+	l.logEntry(PANIC, message, fields, nil)
 }
 
 // Panicf logs a formatted message at PANIC and then panics. The message is formatted only
@@ -1771,12 +1874,12 @@ func (l *Logger) Panicf(format string, args ...interface{}) {
 
 // PanicContext logs at PANIC, adding any fields the context carries and then panics.
 func (l *Logger) PanicContext(ctx context.Context, message string, fields ...Field) {
-	l.logEntry(PANIC, message, true, l.mergeContextFields(ctx, fields), nil)
+	l.logEntry(PANIC, message, l.mergeContextFields(ctx, fields), nil)
 }
 
 // Debug logs a message at DEBUG with optional structured fields.
 func (l *Logger) Debug(message string, fields ...Field) {
-	l.logEntry(DEBUG, message, true, fields, nil)
+	l.logEntry(DEBUG, message, fields, nil)
 }
 
 // Debugf logs a formatted message at DEBUG. The message is formatted only
@@ -1787,12 +1890,12 @@ func (l *Logger) Debugf(format string, args ...interface{}) {
 
 // DebugContext logs at DEBUG, adding any fields the context carries.
 func (l *Logger) DebugContext(ctx context.Context, message string, fields ...Field) {
-	l.logEntry(DEBUG, message, true, l.mergeContextFields(ctx, fields), nil)
+	l.logEntry(DEBUG, message, l.mergeContextFields(ctx, fields), nil)
 }
 
 // Info logs a message at INFO with optional structured fields.
 func (l *Logger) Info(message string, fields ...Field) {
-	l.logEntry(INFO, message, true, fields, nil)
+	l.logEntry(INFO, message, fields, nil)
 }
 
 // Infof logs a formatted message at INFO. The message is formatted only
@@ -1803,12 +1906,12 @@ func (l *Logger) Infof(format string, args ...interface{}) {
 
 // InfoContext logs at INFO, adding any fields the context carries.
 func (l *Logger) InfoContext(ctx context.Context, message string, fields ...Field) {
-	l.logEntry(INFO, message, true, l.mergeContextFields(ctx, fields), nil)
+	l.logEntry(INFO, message, l.mergeContextFields(ctx, fields), nil)
 }
 
 // Warn logs a message at WARN with optional structured fields.
 func (l *Logger) Warn(message string, fields ...Field) {
-	l.logEntry(WARN, message, true, fields, nil)
+	l.logEntry(WARN, message, fields, nil)
 }
 
 // Warnf logs a formatted message at WARN. The message is formatted only
@@ -1819,12 +1922,12 @@ func (l *Logger) Warnf(format string, args ...interface{}) {
 
 // WarnContext logs at WARN, adding any fields the context carries.
 func (l *Logger) WarnContext(ctx context.Context, message string, fields ...Field) {
-	l.logEntry(WARN, message, true, l.mergeContextFields(ctx, fields), nil)
+	l.logEntry(WARN, message, l.mergeContextFields(ctx, fields), nil)
 }
 
 // Error logs a message at ERROR with optional structured fields.
 func (l *Logger) Error(message string, fields ...Field) {
-	l.logEntry(ERROR, message, true, fields, nil)
+	l.logEntry(ERROR, message, fields, nil)
 }
 
 // Errorf logs a formatted message at ERROR. The message is formatted only
@@ -1835,12 +1938,12 @@ func (l *Logger) Errorf(format string, args ...interface{}) {
 
 // ErrorContext logs at ERROR, adding any fields the context carries.
 func (l *Logger) ErrorContext(ctx context.Context, message string, fields ...Field) {
-	l.logEntry(ERROR, message, true, l.mergeContextFields(ctx, fields), nil)
+	l.logEntry(ERROR, message, l.mergeContextFields(ctx, fields), nil)
 }
 
 // Fatal logs a message at FATAL with optional structured fields and exits the application.
 func (l *Logger) Fatal(message string, fields ...Field) {
-	l.logEntry(FATAL, message, true, fields, nil)
+	l.logEntry(FATAL, message, fields, nil)
 }
 
 // Fatalf logs a formatted message at FATAL and exits the application. The message is formatted only
@@ -1851,7 +1954,7 @@ func (l *Logger) Fatalf(format string, args ...interface{}) {
 
 // FatalContext logs at FATAL, adding any fields the context carries and exits the application.
 func (l *Logger) FatalContext(ctx context.Context, message string, fields ...Field) {
-	l.logEntry(FATAL, message, true, l.mergeContextFields(ctx, fields), nil)
+	l.logEntry(FATAL, message, l.mergeContextFields(ctx, fields), nil)
 }
 
 func init() {

@@ -3,30 +3,42 @@ package slogbridge
 import (
 	"context"
 	"log/slog"
+	"runtime"
 
 	log "github.com/pod32g/simple-logger"
 )
 
 // Handler routes slog records into simple-logger.
+//
+// It satisfies the contract testing/slogtest checks, which an earlier version
+// did not: groups nest rather than flattening into dotted keys, the record's
+// own timestamp and source location are used instead of being discarded, empty
+// attributes are skipped, and a group with no attributes is omitted entirely.
+//
+// One deviation remains, by design: slog expects a handler to emit no timestamp
+// when Record.Time is zero, but this logger always stamps an entry. The
+// conformance test asserts every other check.
 type Handler struct {
 	logger *log.Logger
 	level  slog.Leveler
-	attrs  []slog.Attr
+	// fields is the accumulated tree of attrs bound by WithAttrs. groups is the
+	// path within that tree where new attrs are attached, so repeated
+	// WithGroup/WithAttrs pairs merge into one node instead of producing
+	// sibling groups with the same key.
+	fields []log.Field
 	groups []string
 }
 
-// NewHandler creates a slog handler backed by the provided simple logger. Pass a
-// nil level to follow the logger's own level, so that changing it at runtime --
+// NewHandler creates a slog handler backed by the provided logger. Pass a nil
+// level to follow the logger's own level, so that changing it at runtime --
 // with SetLevel, or the level endpoint in the httplog bridge -- reaches slog
 // callers too. Pass an explicit Leveler to gate slog independently of it.
 func NewHandler(logger *log.Logger, level slog.Leveler) *Handler {
-	return &Handler{logger: logger, level: level, attrs: make([]slog.Attr, 0)}
+	return &Handler{logger: logger, level: level}
 }
 
 // Enabled reports whether a record at lvl would be logged. slog consults this
-// before building a record, so a level fixed here is the binding one: when it
-// was pinned at construction, turning the underlying logger down to DEBUG could
-// never make debug records appear.
+// before building a record, so a level fixed here is the binding one.
 func (h *Handler) Enabled(_ context.Context, lvl slog.Level) bool {
 	if h.level != nil {
 		return lvl >= h.level.Level()
@@ -38,89 +50,133 @@ func (h *Handler) Enabled(_ context.Context, lvl slog.Level) bool {
 }
 
 func (h *Handler) Handle(_ context.Context, record slog.Record) error {
-	fields := make([]log.Field, 0, record.NumAttrs()+len(h.attrs))
-	for _, attr := range h.attrs {
-		h.appendAttr(&fields, attr, h.groups)
-	}
+	var recordFields []log.Field
 	record.Attrs(func(a slog.Attr) bool {
-		h.appendAttr(&fields, a, h.groups)
+		recordFields = appendAttr(recordFields, a)
 		return true
 	})
+	// Record attrs attach at the current path, merging into the same group nodes
+	// the bound attrs already occupy.
+	fields := insertAt(h.fields, h.groups, recordFields)
 
-	msg := record.Message
-	switch levelToLogLevel(record.Level) {
-	case log.TRACE:
-		h.logger.Trace(msg, fields...)
-	case log.DEBUG:
-		h.logger.Debug(msg, fields...)
-	case log.INFO:
-		h.logger.Info(msg, fields...)
-	case log.WARN:
-		h.logger.Warn(msg, fields...)
-	case log.ERROR:
-		h.logger.Error(msg, fields...)
-	case log.PANIC:
-		h.logger.Panic(msg, fields...)
-	case log.FATAL:
-		h.logger.Fatal(msg, fields...)
-	default:
-		h.logger.Info(msg, fields...)
+	var opts []log.EntryOption
+	if !record.Time.IsZero() {
+		opts = append(opts, log.EntryTime(record.Time))
 	}
+	if record.PC != 0 {
+		if frame, _ := runtime.CallersFrames([]uintptr{record.PC}).Next(); frame.File != "" {
+			opts = append(opts, log.EntryCaller(basename(frame.File), frame.Line))
+		}
+	}
+
+	h.logger.Log(levelToLogLevel(record.Level), record.Message, fields, opts...)
 	return nil
 }
 
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	if len(attrs) == 0 {
+		return h
+	}
+	var converted []log.Field
+	for _, a := range attrs {
+		converted = appendAttr(converted, a)
+	}
 	dup := *h
-	dup.attrs = append(append([]slog.Attr(nil), h.attrs...), attrs...)
+	dup.fields = insertAt(h.fields, h.groups, converted)
 	return &dup
 }
 
 func (h *Handler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
 	dup := *h
 	dup.groups = append(append([]string(nil), h.groups...), name)
 	return &dup
 }
 
-func (h *Handler) appendAttr(dst *[]log.Field, attr slog.Attr, groups []string) {
+// appendAttr converts one attr. Empty attrs are dropped, a group with an empty
+// key is inlined into its parent, and an empty group disappears -- all three
+// are conformance requirements rather than preferences.
+func appendAttr(dst []log.Field, attr slog.Attr) []log.Field {
+	if attr.Equal(slog.Attr{}) {
+		return dst
+	}
 	value := attr.Value.Resolve()
-	key := qualifiedKey(groups, attr.Key)
 
+	if value.Kind() == slog.KindGroup {
+		var nested []log.Field
+		for _, child := range value.Group() {
+			nested = appendAttr(nested, child)
+		}
+		if len(nested) == 0 {
+			return dst
+		}
+		if attr.Key == "" {
+			return append(dst, nested...)
+		}
+		return append(dst, log.Group(attr.Key, nested...))
+	}
+	if attr.Key == "" {
+		return dst
+	}
+	return append(dst, fieldFor(attr.Key, value))
+}
+
+func fieldFor(key string, value slog.Value) log.Field {
 	switch value.Kind() {
 	case slog.KindString:
-		*dst = append(*dst, log.String(key, value.String()))
+		return log.String(key, value.String())
 	case slog.KindBool:
-		*dst = append(*dst, log.Bool(key, value.Bool()))
+		return log.Bool(key, value.Bool())
 	case slog.KindInt64:
-		*dst = append(*dst, log.Any(key, value.Int64()))
+		return log.Int64(key, value.Int64())
 	case slog.KindUint64:
-		*dst = append(*dst, log.Any(key, value.Uint64()))
+		return log.Uint64(key, value.Uint64())
 	case slog.KindFloat64:
-		*dst = append(*dst, log.Any(key, value.Float64()))
+		return log.Float64(key, value.Float64())
 	case slog.KindDuration:
-		*dst = append(*dst, log.Any(key, value.Duration()))
+		return log.Duration(key, value.Duration())
 	case slog.KindTime:
-		*dst = append(*dst, log.Any(key, value.Time()))
-	case slog.KindGroup:
-		for _, child := range value.Group() {
-			h.appendAttr(dst, child, append(groups, attr.Key))
-		}
+		return log.Time(key, value.Time())
 	default:
-		*dst = append(*dst, log.Any(key, value.Any()))
+		return log.Any(key, value.Any())
 	}
 }
 
-func qualifiedKey(groups []string, key string) string {
-	if len(groups) == 0 {
-		return key
+// insertAt attaches add to tree at the given group path, reusing a group node
+// that is already there rather than adding a second one with the same key.
+// Without that merge, WithGroup("G").WithAttrs(a).WithGroup("H").WithAttrs(b)
+// produces two "G" keys, and one of them wins.
+func insertAt(tree []log.Field, path []string, add []log.Field) []log.Field {
+	if len(add) == 0 {
+		return append([]log.Field(nil), tree...)
 	}
-	full := groups[0]
-	for _, g := range groups[1:] {
-		full += "." + g
+	if len(path) == 0 {
+		return append(append([]log.Field(nil), tree...), add...)
 	}
-	if key != "" {
-		full += "." + key
+
+	out := append([]log.Field(nil), tree...)
+	name := path[0]
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i].Key != name {
+			continue
+		}
+		if children, ok := out[i].Value.([]log.Field); ok {
+			out[i] = log.Group(name, insertAt(children, path[1:], add)...)
+			return out
+		}
 	}
-	return full
+	return append(out, log.Group(name, insertAt(nil, path[1:], add)...))
+}
+
+func basename(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' || path[i] == '\\' {
+			return path[i+1:]
+		}
+	}
+	return path
 }
 
 func levelToLogLevel(lvl slog.Level) log.LogLevel {

@@ -71,7 +71,7 @@ func TestHandlerAttrKinds(t *testing.T) {
 	}
 
 	out := buf.String()
-	for _, want := range []string{`"u"`, `"f"`, `"d"`, `"t"`, `"req.id"`, `"abc"`, `"lazy"`, `"resolved"`} {
+	for _, want := range []string{`"u"`, `"f"`, `"d"`, `"t"`, `"req":{"id":"abc"}`, `"abc"`, `"lazy"`, `"resolved"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %s in output, got %s", want, out)
 		}
