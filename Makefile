@@ -18,11 +18,11 @@ build: build-examples ## Build all packages, including nested example modules
 	$(GO) build $(PKG)
 
 .PHONY: build-examples
-build-examples: ## Build examples that carry their own go.mod
-	@find example -name go.mod -print0 | while IFS= read -r -d '' mod; do \
+build-examples: ## Build nested modules (examples, gRPC bridge)
+	@find example bridge -name go.mod -print0 | while IFS= read -r -d '' mod; do \
 		dir=$$(dirname "$$mod"); \
 		echo "  building $$dir"; \
-		(cd "$$dir" && $(GO) build -o "$$(mktemp -d)/" ./... && $(GO) vet ./...) || exit 1; \
+		(cd "$$dir" && $(GO) vet ./... && $(GO) test ./... && $(GO) build -o "$$(mktemp -d)/" ./... 2>/dev/null || $(GO) build ./...) || exit 1; \
 	done
 
 .PHONY: test

@@ -38,14 +38,14 @@ jobs:
       - name: Build
         run: go build ./...
 
-      - name: Build nested example modules
+      - name: Build and test nested modules
         run: |
-          # Examples with their own go.mod are outside ./..., so build them
-          # explicitly or they rot unnoticed.
-          find example -name go.mod -print0 | while IFS= read -r -d '' mod; do
+          # Nested modules (examples and the gRPC bridge) are outside ./..., so
+          # build and test them explicitly or they rot unnoticed.
+          find example bridge -name go.mod -print0 | while IFS= read -r -d '' mod; do
             dir=$(dirname "$mod")
             echo "::group::$dir"
-            (cd "$dir" && go build -o "$(mktemp -d)/" ./... && go vet ./...)
+            (cd "$dir" && go vet ./... && go test ./... && { go build -o "$(mktemp -d)/" ./... 2>/dev/null || go build ./...; })
             echo "::endgroup::"
           done
 

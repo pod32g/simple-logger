@@ -494,7 +494,7 @@ formatters, and other options.
 Several runnable examples demonstrate integrations beyond the basics:
 
 - `example/http_middleware`: Wrap standard `net/http` handlers with structured request logging.
-- `example/grpc_interceptor`: Attach a unary interceptor that records request IDs, latency, and errors.
+- `bridge/grpclog`: gRPC unary and stream interceptors recording method, status code, latency and request IDs (its own module, so gRPC stays out of your graph).
 - `example/cli_dynamic`: Small CLI that watches config files and accepts live tweaks from STDIN.
 
 ### End-to-End Tests
