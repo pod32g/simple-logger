@@ -118,6 +118,35 @@ jobs:
       - name: Staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      # Every module, not just the root. A nested module resolves its own
+      # dependency versions, so bridge/grpclog silently pinned an x/net two
+      # releases behind the one the root module had been moved to, and only one
+      # of the seven advisories that carried reached us as an alert.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          status=0
+          for mod in $(find . -name go.mod -not -path "./testdata/*"); do
+            dir=$(dirname "$mod")
+            echo "::group::$dir"
+            (cd "$dir" && govulncheck ./...) || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
   tidy:
     name: Modules tidy & verify
     runs-on: ubuntu-latest

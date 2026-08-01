@@ -50,6 +50,14 @@ bench: ## Run benchmarks
 fuzz: ## Run the JSON formatter fuzz target (FUZZTIME=30s by default)
 	$(GO) test -run='^$$' -fuzz='^FuzzJSONEncoder$$' -fuzztime=$(FUZZTIME) .
 
+.PHONY: vuln
+vuln: ## Scan every module for known vulnerabilities
+	@find . -name go.mod -not -path "./testdata/*" | while read -r mod; do \
+		dir=$$(dirname "$$mod"); \
+		echo "  scanning $$dir"; \
+		(cd "$$dir" && $(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...) || exit 1; \
+	done
+
 .PHONY: vet
 vet: ## Run go vet
 	$(GO) vet $(PKG)
@@ -82,7 +90,7 @@ tidy: ## Tidy and verify go modules
 check: fmt-check vet test ## Run the fast local checks (fmt, vet, test)
 
 .PHONY: ci
-ci: fmt-check vet lint staticcheck race ## Run the full check suite as CI would
+ci: fmt-check vet lint staticcheck vuln race ## Run the full check suite as CI would
 
 .PHONY: clean
 clean: ## Remove build and coverage artifacts

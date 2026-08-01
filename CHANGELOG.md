@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Security
+- The gRPC bridge module carried `golang.org/x/net` v0.53.0 and
+  `golang.org/x/text` v0.36.0 — older than the versions the root module had
+  already been moved to, because a nested module resolves its own dependency
+  versions and `go mod tidy` takes the minimum its requirements allow. Seven
+  advisories rode along, of which exactly one surfaced as an alert. Both are
+  now at the versions the root module uses.
+- CI runs `govulncheck` across **every** module rather than only the root, and
+  `make vuln` does the same locally. Nothing was checking the nested module,
+  which is why introducing it could quietly undo dependency work already done.
 
 ## [0.8.1] - 2026-07-31
 
