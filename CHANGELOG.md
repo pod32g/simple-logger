@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-31
+
 A release about the public API. Every capability from 0.7.1 is still here; the
 surface reaching it is much smaller, and several long-standing gaps are closed.
 
