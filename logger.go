@@ -122,12 +122,6 @@ func ErrorVerbose(key string, err error) Field {
 	return Field{Key: key, Value: fmt.Sprintf("%+v", err)}
 }
 
-// FieldEncoder allows custom text/JSON rendering for specific value types.
-type FieldEncoder struct {
-	EncodeText func(interface{}) (string, bool)
-	EncodeJSON func(interface{}) (interface{}, bool)
-}
-
 type fieldEncoder struct {
 	text func(interface{}) (string, bool)
 	json func(interface{}) (interface{}, bool)
@@ -239,11 +233,6 @@ type StructuredFormatter interface {
 // StructuredWriterFormatter allows direct writer formatting with fields.
 type StructuredWriterFormatter interface {
 	FormatWithFieldsTo(level LogLevel, message string, fields []Field, w io.Writer)
-}
-
-// StructuredArgsFormatter extends ArgsFormatter to handle structured fields.
-type StructuredArgsFormatter interface {
-	FormatArgsWithFields(level LogLevel, fields []Field, w io.Writer, v ...interface{})
 }
 
 type contextFieldsKey struct{}

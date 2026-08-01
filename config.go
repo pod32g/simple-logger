@@ -11,11 +11,6 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// CustomFormatter is an interface that users can implement to provide custom log formatting
-type CustomFormatter interface {
-	Format(level LogLevel, message string) string
-}
-
 // LoggerConfig holds all configurable settings for the logger
 type LoggerConfig struct {
 	Level  LogLevel `json:"level"`
@@ -24,14 +19,14 @@ type LoggerConfig struct {
 	// Filepath, when non-empty, designates a log file destination and takes
 	// precedence over Output. Prefer Output for new configurations; Filepath is
 	// retained for backward compatibility.
-	Filepath          string          `json:"filepath"`
-	EnableCaller      bool            `json:"enable_caller"`
-	SyncWrites        bool            `json:"sync_writes"`
-	Colorize          bool            `json:"colorize"`
-	TimeFormat        string          `json:"time_format"`
-	IncludeStacktrace bool            `json:"include_stacktrace"`
-	Rotation          RotationConfig  `json:"rotation"`
-	Custom            CustomFormatter `json:"-"` // Custom formatter provided by the user
+	Filepath          string         `json:"filepath"`
+	EnableCaller      bool           `json:"enable_caller"`
+	SyncWrites        bool           `json:"sync_writes"`
+	Colorize          bool           `json:"colorize"`
+	TimeFormat        string         `json:"time_format"`
+	IncludeStacktrace bool           `json:"include_stacktrace"`
+	Rotation          RotationConfig `json:"rotation"`
+	Custom            Formatter      `json:"-"` // Custom formatter provided by the user
 }
 
 type RotationConfig struct {
