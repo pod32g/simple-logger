@@ -38,6 +38,17 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Build nested example modules
+        run: |
+          # Examples with their own go.mod are outside ./..., so build them
+          # explicitly or they rot unnoticed.
+          find example -name go.mod -print0 | while IFS= read -r -d '' mod; do
+            dir=$(dirname "$mod")
+            echo "::group::$dir"
+            (cd "$dir" && go build ./... && go vet ./...)
+            echo "::endgroup::"
+          done
+
       - name: Test (race + coverage)
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
 
@@ -98,11 +109,11 @@ jobs:
           go-version: '1.25.x'
           cache: true
 
+      # Invoked directly rather than through dominikh/staticcheck-action: that
+      # action pins an actions/cache release built on the deprecated Node 20
+      # runtime, which cannot be overridden from here.
       - name: Staticcheck
-        uses: dominikh/staticcheck-action@v1
-        with:
-          version: latest
-          install-go: false
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 
   tidy:
     name: Modules tidy & verify

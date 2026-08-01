@@ -14,8 +14,16 @@ help: ## Show this help
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: build
-build: ## Build all packages
+build: build-examples ## Build all packages, including nested example modules
 	$(GO) build $(PKG)
+
+.PHONY: build-examples
+build-examples: ## Build examples that carry their own go.mod
+	@find example -name go.mod -print0 | while IFS= read -r -d '' mod; do \
+		dir=$$(dirname "$$mod"); \
+		echo "  building $$dir"; \
+		(cd "$$dir" && $(GO) build ./... && $(GO) vet ./...) || exit 1; \
+	done
 
 .PHONY: test
 test: ## Run the test suite

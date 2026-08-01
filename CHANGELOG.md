@@ -13,10 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   this module; `govulncheck` reports no vulnerabilities.
 
 ### Changed
-- **The minimum Go version is now 1.25.** The patched `google.golang.org/grpc`
-  declares `go 1.25.0`, so the module follows. Note that grpc reaches this module
-  only through `example/grpc_interceptor` — no package in the library itself
-  imports it.
+- **The minimum Go version is now 1.25**, required by `go.opentelemetry.io/otel`,
+  which moved to `go 1.25.0` at v1.42.0 and is needed at 1.44.0 for a security fix.
+- **`google.golang.org/grpc` is no longer a dependency of this module.** It was
+  only ever imported by `example/grpc_interceptor`, which now has its own
+  `go.mod`, so importing simple-logger no longer pulls grpc (and `golang.org/x/net`,
+  `golang.org/x/text` and `genproto` with it) into your module graph.
 
 ### Added
 - `Debugf`/`Infof`/`Warnf`/`Errorf`/`Fatalf` printf-style methods. They check the
