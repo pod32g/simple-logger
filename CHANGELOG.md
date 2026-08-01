@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+
+## [0.8.1] - 2026-07-31
+
+A single change to text output, cut promptly so that 0.8.0 and 0.8.1 do not
+sit side by side for long with different formats.
+
 ### Changed
 - **The text and console encoders quote field values that would otherwise make
   `key=value` ambiguous** — a value containing a space, a quote, an `=`, or an
