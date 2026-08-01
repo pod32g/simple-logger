@@ -170,9 +170,11 @@ var (
 	fieldEncoders = make(map[reflect.Type]fieldEncoder)
 )
 
-// RegisterFieldEncoder attaches custom text/JSON encoders for a type.
-// Pass nil for either function to fall back to default behavior.
-func RegisterFieldEncoder[T any](text func(T) (string, bool), json func(T) (interface{}, bool)) {
+// registerDefaultFieldEncoder installs an encoder every logger inherits. It is
+// unexported: a package-level registry means any imported library can change how
+// every logger in the process renders a type, with no way to scope or undo it.
+// Callers reach the same capability per logger through WithFieldEncoder.
+func registerDefaultFieldEncoder[T any](text func(T) (string, bool), json func(T) (interface{}, bool)) {
 	encoderMu.Lock()
 	defer encoderMu.Unlock()
 	t := reflect.TypeOf((*T)(nil)).Elem()
@@ -180,6 +182,46 @@ func RegisterFieldEncoder[T any](text func(T) (string, bool), json func(T) (inte
 		text: wrapTextEncoder(text),
 		json: wrapJSONEncoder(json),
 	}
+}
+
+// fieldCodecs is a logger's own set of type encoders, consulted ahead of the
+// package defaults.
+type fieldCodecs struct {
+	byType map[reflect.Type]fieldEncoder
+}
+
+func (c *fieldCodecs) lookup(val interface{}) (fieldEncoder, interface{}, bool) {
+	if c != nil && len(c.byType) > 0 && val != nil {
+		t := reflect.TypeOf(val)
+		if enc, ok := c.byType[t]; ok {
+			return enc, val, true
+		}
+		if t.Kind() == reflect.Pointer {
+			rv := reflect.ValueOf(val)
+			if !rv.IsNil() {
+				if enc, ok := c.byType[t.Elem()]; ok {
+					return enc, rv.Elem().Interface(), true
+				}
+			}
+		}
+	}
+	return lookupFieldEncoder(val)
+}
+
+func (c *fieldCodecs) text(val interface{}) (string, bool) {
+	enc, v, ok := c.lookup(val)
+	if !ok || enc.text == nil {
+		return "", false
+	}
+	return enc.text(v)
+}
+
+func (c *fieldCodecs) json(val interface{}) (interface{}, bool) {
+	enc, v, ok := c.lookup(val)
+	if !ok || enc.json == nil {
+		return nil, false
+	}
+	return enc.json(v)
 }
 
 func wrapTextEncoder[T any](fn func(T) (string, bool)) func(interface{}) (string, bool) {
@@ -234,22 +276,6 @@ func lookupFieldEncoder(val interface{}) (fieldEncoder, interface{}, bool) {
 	}
 	encoderMu.RUnlock()
 	return fieldEncoder{}, nil, false
-}
-
-func encodeTextWithRegistry(val interface{}) (string, bool) {
-	enc, v, ok := lookupFieldEncoder(val)
-	if !ok || enc.text == nil {
-		return "", false
-	}
-	return enc.text(v)
-}
-
-func encodeJSONWithRegistry(val interface{}) (interface{}, bool) {
-	enc, v, ok := lookupFieldEncoder(val)
-	if !ok || enc.json == nil {
-		return nil, false
-	}
-	return enc.json(v)
 }
 
 // Hook observes log events.
@@ -763,6 +789,7 @@ type loggerCore struct {
 	encoder    atomic.Pointer[encoderHolder]
 	clock      atomic.Pointer[clockHolder]
 	wantCaller atomic.Bool
+	codecs     atomic.Pointer[fieldCodecs]
 	sampler    atomic.Pointer[samplerHolder]
 	hooksMu    sync.RWMutex
 	hooks      []hookRegistration
@@ -1565,6 +1592,7 @@ func (l *Logger) logEntrySync(level LogLevel, message string, fields []Field, ca
 		Message: resolvedMessage,
 		Fields:  fields,
 		Time:    at,
+		codecs:  l.codecs.Load(),
 	}
 	if entry.Time.IsZero() {
 		entry.Time = l.now()
@@ -1837,15 +1865,15 @@ func (l *Logger) FatalContext(ctx context.Context, message string, fields ...Fie
 }
 
 func init() {
-	RegisterFieldEncoder[time.Duration](
+	registerDefaultFieldEncoder[time.Duration](
 		func(d time.Duration) (string, bool) { return d.String(), true },
 		func(d time.Duration) (interface{}, bool) { return d.String(), true },
 	)
-	RegisterFieldEncoder[time.Time](
+	registerDefaultFieldEncoder[time.Time](
 		func(t time.Time) (string, bool) { return t.Format(time.RFC3339), true },
 		func(t time.Time) (interface{}, bool) { return t.Format(time.RFC3339), true },
 	)
-	RegisterFieldEncoder[error](
+	registerDefaultFieldEncoder[error](
 		func(err error) (string, bool) { return err.Error(), true },
 		func(err error) (interface{}, bool) { return err.Error(), true },
 	)

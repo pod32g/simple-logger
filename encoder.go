@@ -17,6 +17,10 @@ type Entry struct {
 	// Caller is the resolved call site. It is only populated when the logger was
 	// built WithCaller; File is empty otherwise.
 	Caller Caller
+
+	// codecs are the logger's own type encoders. It is unexported because a
+	// custom encoder renders values itself and has no use for them.
+	codecs *fieldCodecs
 }
 
 // Encoder renders an entry. It appends to buf and returns the extended slice,
@@ -74,7 +78,7 @@ func (e *TextEncoder) Encode(buf []byte, entry Entry) []byte {
 	}
 	buf = append(buf, ']', ' ')
 	buf = appendTextSafe(buf, entry.Message)
-	buf = appendFieldsText(buf, entry.Fields, entry.Message != "", "")
+	buf = appendFieldsText(buf, entry.Fields, entry.Message != "", "", entry.codecs)
 	return append(buf, '\n')
 }
 
@@ -102,7 +106,7 @@ func (e *JSONEncoder) Encode(buf []byte, entry Entry) []byte {
 		buf = append(buf, `,"line":`...)
 		buf = strconv.AppendInt(buf, int64(entry.Caller.Line), 10)
 	}
-	buf = appendJSONFieldsTo(buf, entry.Fields)
+	buf = appendJSONFieldsTo(buf, entry.Fields, entry.codecs)
 	return append(buf, '}', '\n')
 }
 
@@ -151,7 +155,7 @@ func (e *ConsoleEncoder) Encode(buf []byte, entry Entry) []byte {
 		buf = append(buf, ' ')
 		buf = appendTextSafe(buf, entry.Message)
 	}
-	buf = appendFieldsConsole(buf, entry.Fields, e.NoColor, "")
+	buf = appendFieldsConsole(buf, entry.Fields, e.NoColor, "", entry.codecs)
 	return append(buf, '\n')
 }
 
@@ -199,10 +203,10 @@ func appendTextSafe(buf []byte, s string) []byte {
 
 // appendFieldsText renders fields as key=value, flattening groups with a dotted
 // prefix so line-oriented output stays one line.
-func appendFieldsText(buf []byte, fields []Field, spaceFirst bool, prefix string) []byte {
+func appendFieldsText(buf []byte, fields []Field, spaceFirst bool, prefix string, codecs *fieldCodecs) []byte {
 	for i, f := range fields {
 		if group, ok := f.Value.([]Field); ok {
-			buf = appendFieldsText(buf, group, spaceFirst || i > 0, joinKey(prefix, f.Key))
+			buf = appendFieldsText(buf, group, spaceFirst || i > 0, joinKey(prefix, f.Key), codecs)
 			continue
 		}
 		if spaceFirst || i > 0 {
@@ -210,15 +214,15 @@ func appendFieldsText(buf []byte, fields []Field, spaceFirst bool, prefix string
 		}
 		buf = append(buf, joinKey(prefix, f.Key)...)
 		buf = append(buf, '=')
-		buf = appendValueText(buf, f.Value)
+		buf = appendValueText(buf, f.Value, codecs)
 	}
 	return buf
 }
 
-func appendFieldsConsole(buf []byte, fields []Field, noColor bool, prefix string) []byte {
+func appendFieldsConsole(buf []byte, fields []Field, noColor bool, prefix string, codecs *fieldCodecs) []byte {
 	for _, f := range fields {
 		if group, ok := f.Value.([]Field); ok {
-			buf = appendFieldsConsole(buf, group, noColor, joinKey(prefix, f.Key))
+			buf = appendFieldsConsole(buf, group, noColor, joinKey(prefix, f.Key), codecs)
 			continue
 		}
 		buf = append(buf, ' ')
@@ -230,7 +234,7 @@ func appendFieldsConsole(buf []byte, fields []Field, noColor bool, prefix string
 		if !noColor {
 			buf = append(buf, colorReset...)
 		}
-		buf = appendConsoleValue(buf, f.Value)
+		buf = appendConsoleValue(buf, f.Value, codecs)
 	}
 	return buf
 }
@@ -245,8 +249,8 @@ func joinKey(prefix, key string) string {
 	return prefix + "." + key
 }
 
-func appendValueText(buf []byte, val interface{}) []byte {
-	if s, ok := encodeTextWithRegistry(val); ok {
+func appendValueText(buf []byte, val interface{}, codecs *fieldCodecs) []byte {
+	if s, ok := codecs.text(val); ok {
 		return appendTextSafe(buf, s)
 	}
 	switch v := val.(type) {
@@ -277,8 +281,8 @@ func appendValueText(buf []byte, val interface{}) []byte {
 	}
 }
 
-func appendConsoleValue(buf []byte, val interface{}) []byte {
-	if s, ok := encodeTextWithRegistry(val); ok {
+func appendConsoleValue(buf []byte, val interface{}, codecs *fieldCodecs) []byte {
+	if s, ok := codecs.text(val); ok {
 		return appendMaybeQuoted(buf, s)
 	}
 	switch v := val.(type) {
@@ -309,17 +313,17 @@ func containsAny(s, chars string) bool {
 	return false
 }
 
-func appendJSONFieldsTo(buf []byte, fields []Field) []byte {
+func appendJSONFieldsTo(buf []byte, fields []Field, codecs *fieldCodecs) []byte {
 	for _, f := range fields {
 		buf = append(buf, ',')
 		buf = appendJSONStringTo(buf, f.Key)
 		buf = append(buf, ':')
-		buf = appendJSONValueTo(buf, f.Value)
+		buf = appendJSONValueTo(buf, f.Value, codecs)
 	}
 	return buf
 }
 
-func appendJSONValueTo(buf []byte, val interface{}) []byte {
+func appendJSONValueTo(buf []byte, val interface{}, codecs *fieldCodecs) []byte {
 	if group, ok := val.([]Field); ok {
 		buf = append(buf, '{')
 		for i, f := range group {
@@ -328,11 +332,11 @@ func appendJSONValueTo(buf []byte, val interface{}) []byte {
 			}
 			buf = appendJSONStringTo(buf, f.Key)
 			buf = append(buf, ':')
-			buf = appendJSONValueTo(buf, f.Value)
+			buf = appendJSONValueTo(buf, f.Value, codecs)
 		}
 		return append(buf, '}')
 	}
-	if encoded, ok := encodeJSONWithRegistry(val); ok {
+	if encoded, ok := codecs.json(val); ok {
 		val = encoded
 	}
 	switch v := val.(type) {

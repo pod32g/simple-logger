@@ -155,5 +155,5 @@ jobs:
           go-version: '1.25.x'
           cache: true
 
-      - name: Fuzz JSON formatter (30s)
-        run: go test -run '^$' -fuzz '^FuzzJSONFormatterFormat$' -fuzztime=30s .
+      - name: Fuzz JSON encoder (30s)
+        run: go test -run '^$' -fuzz '^FuzzJSONEncoder$' -fuzztime=30s .

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -43,6 +44,8 @@ type builder struct {
 
 	async     bool
 	asyncOpts asyncConfig
+
+	codecs map[reflect.Type]fieldEncoder
 }
 
 type hookSpec struct {
@@ -131,6 +134,9 @@ func (b *builder) build() *Logger {
 	if len(b.levelOutputs) > 0 {
 		outs := append([]levelOutput(nil), b.levelOutputs...)
 		l.levelOutputs.Store(&outs)
+	}
+	if len(b.codecs) > 0 {
+		l.codecs.Store(&fieldCodecs{byType: b.codecs})
 	}
 	if b.async {
 		l.enableAsync(b.asyncOpts)
@@ -411,6 +417,31 @@ func WithMaxMessageBytes(n int) Option {
 func WithUnsynchronized() Option {
 	return func(b *builder) error {
 		b.unsynchronized = true
+		return nil
+	}
+}
+
+// WithFieldEncoder controls how values of type T are rendered by this logger,
+// in text and in JSON. Return false from either function to fall back to the
+// default rendering.
+//
+//	log.New(log.WithFieldEncoder(
+//	    func(id UserID) (string, bool) { return id.String(), true },
+//	    func(id UserID) (any, bool)    { return id.String(), true },
+//	))
+//
+// It is scoped to the logger it builds. The package-level registry this
+// replaces meant any imported library could change how every logger in the
+// process rendered a type, with no way to scope or undo it.
+func WithFieldEncoder[T any](text func(T) (string, bool), jsonEnc func(T) (interface{}, bool)) Option {
+	return func(b *builder) error {
+		if b.codecs == nil {
+			b.codecs = make(map[reflect.Type]fieldEncoder)
+		}
+		b.codecs[reflect.TypeOf((*T)(nil)).Elem()] = fieldEncoder{
+			text: wrapTextEncoder(text),
+			json: wrapJSONEncoder(jsonEnc),
+		}
 		return nil
 	}
 }

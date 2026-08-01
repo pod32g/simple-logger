@@ -48,7 +48,7 @@ bench: ## Run benchmarks
 
 .PHONY: fuzz
 fuzz: ## Run the JSON formatter fuzz target (FUZZTIME=30s by default)
-	$(GO) test -run='^$$' -fuzz='^FuzzJSONFormatterFormat$$' -fuzztime=$(FUZZTIME) .
+	$(GO) test -run='^$$' -fuzz='^FuzzJSONEncoder$$' -fuzztime=$(FUZZTIME) .
 
 .PHONY: vet
 vet: ## Run go vet

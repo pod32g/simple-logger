@@ -331,24 +331,26 @@ func TestLogger_IncludeStacktrace(t *testing.T) {
 	}
 }
 
-func TestRegisterFieldEncoder(t *testing.T) {
-	type customType struct{ Value string }
+type customType struct{ Value string }
 
-	log.RegisterFieldEncoder[customType](
+// Field encoders belong to the logger that uses them, so one library cannot
+// change how every logger in the process renders a type.
+func TestWithFieldEncoder(t *testing.T) {
+	encoded := log.WithFieldEncoder[customType](
 		func(c customType) (string, bool) { return "custom:" + c.Value, true },
 		func(c customType) (interface{}, bool) { return map[string]string{"value": c.Value}, true },
 	)
 
 	var buf bytes.Buffer
-	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO)))
+	logger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), encoded))
 	logger.Info("encoded", log.Any("ct", customType{"foo"}))
 	if !strings.Contains(buf.String(), "custom:foo") {
-		t.Fatalf("expected custom encoder output, got %q", buf.String())
+		t.Fatalf("expected the custom encoder to be used, got %q", buf.String())
 	}
 
-	// The same registered encoder must apply under a different output encoding.
+	// The same encoder applies under a different output encoding.
 	buf.Reset()
-	jsonLogger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON()))
+	jsonLogger := log.Must(log.New(log.WithOutput(&buf), log.WithLevel(log.INFO), log.WithJSON(), encoded))
 	jsonLogger.Info("encoded", log.Any("ct", customType{"bar"}))
 
 	var payload map[string]interface{}
@@ -357,7 +359,28 @@ func TestRegisterFieldEncoder(t *testing.T) {
 	}
 	value, ok := payload["ct"].(map[string]interface{})
 	if !ok || value["value"] != "bar" {
-		t.Fatalf("expected JSON custom encoder output, got %v", payload["ct"])
+		t.Fatalf("expected the JSON encoder output, got %v", payload["ct"])
+	}
+}
+
+// A logger built without the option is unaffected by one built with it.
+func TestFieldEncoderIsScopedToItsLogger(t *testing.T) {
+	var withEnc, without bytes.Buffer
+
+	custom := log.Must(log.New(log.WithOutput(&withEnc), log.WithLevel(log.INFO),
+		log.WithFieldEncoder[customType](
+			func(c customType) (string, bool) { return "custom:" + c.Value, true },
+			nil)))
+	plain := log.Must(log.New(log.WithOutput(&without), log.WithLevel(log.INFO)))
+
+	custom.Info("m", log.Any("ct", customType{"x"}))
+	plain.Info("m", log.Any("ct", customType{"x"}))
+
+	if !strings.Contains(withEnc.String(), "custom:x") {
+		t.Errorf("encoder did not apply to its own logger: %q", withEnc.String())
+	}
+	if strings.Contains(without.String(), "custom:x") {
+		t.Errorf("encoder leaked into another logger: %q", without.String())
 	}
 }
 

@@ -199,6 +199,17 @@ logger := log.Must(log.New(log.WithEncoder(logfmtEncoder{})))
 
 Built in: `TextEncoder` (the default), `JSONEncoder`, `ConsoleEncoder`.
 
+To change how one type renders without writing an encoder, use
+`WithFieldEncoder`. It is scoped to the logger it builds, so a library cannot
+change how every logger in your process renders a type:
+
+```go
+log.New(log.WithFieldEncoder(
+    func(id UserID) (string, bool) { return id.String(), true },
+    func(id UserID) (any, bool)    { return id.String(), true },
+))
+```
+
 ## Configuration from data
 
 For configuration that arrives as a file or environment variables:
