@@ -1,0 +1,40 @@
+--- plain
+2026-08-01 09:41:22 - [[32mINFO[0m] server started
+--- empty message
+2026-08-01 09:41:22 - [[32mINFO[0m] only=fields
+--- field types
+2026-08-01 09:41:22 - [[32mINFO[0m] types str=value int=-7 uint=18446744073709551615 float=1.5 bool=true dur=1.5s time=2026-08-01T09:41:22Z bin=dead err=connection refused nil=null
+--- groups
+2026-08-01 09:41:22 - [[32mINFO[0m] request id=req-42 http.method=GET http.status=200 http.client.ip=10.0.0.1
+--- empty group
+2026-08-01 09:41:22 - [[32mINFO[0m] m
+--- caller
+2026-08-01 09:41:22 - main.go:42 - [[32mINFO[0m] with call site
+--- caller and fields
+2026-08-01 09:41:22 - handler.go:118 - [[33mWARN[0m] slow took=2s
+--- no timestamp
+[[32mINFO[0m] a record with no time
+--- no timestamp with caller
+bridge.go:7 - [[32mINFO[0m] no time, has caller
+--- control characters
+2026-08-01 09:41:22 - [[31mERROR[0m] "line one\nline two\ttabbed" user="eve\n2020-01-01 00:00:00 - [ERROR] forged"
+--- quotes and backslash
+2026-08-01 09:41:22 - [[32mINFO[0m] say "hi"\ok path=C:\tmp\x
+--- invalid utf8
+2026-08-01 09:41:22 - [[32mINFO[0m] bad ÿ byte k=aÿb
+--- spaces in values
+2026-08-01 09:41:22 - [[32mINFO[0m] note text=with spaces empty=
+--- level TRACE
+2026-08-01 09:41:22 - [[37mTRACE[0m] message
+--- level DEBUG
+2026-08-01 09:41:22 - [[36mDEBUG[0m] message
+--- level INFO
+2026-08-01 09:41:22 - [[32mINFO[0m] message
+--- level WARN
+2026-08-01 09:41:22 - [[33mWARN[0m] message
+--- level ERROR
+2026-08-01 09:41:22 - [[31mERROR[0m] message
+--- level PANIC
+2026-08-01 09:41:22 - [[35mPANIC[0m] message
+--- level FATAL
+2026-08-01 09:41:22 - [[35mFATAL[0m] message

@@ -1,0 +1,8 @@
+2026-08-01 09:41:22 - [INFO] server started addr=:8080
+2026-08-01 09:41:22 - [WARN] retrying in 250ms
+2026-08-01 09:41:22 - [TRACE] entering handler
+2026-08-01 09:41:22 - [ERROR] upstream failed error=connection refused
+2026-08-01 09:41:22 - [INFO] handling logger=http request_id=req-42
+2026-08-01 09:41:22 - [INFO] request http.method=GET http.status=200
+2026-08-01 09:41:22 - [INFO] login user=alice password=[REDACTED]
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"server started","addr":":8080","tls":true}

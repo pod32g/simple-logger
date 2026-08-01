@@ -333,6 +333,11 @@ func containsAny(s, chars string) bool {
 
 func appendJSONFieldsTo(buf []byte, fields []Field, codecs *fieldCodecs) []byte {
 	for _, f := range fields {
+		// An empty group is omitted, matching the text encoders and the rule
+		// slog states for handlers.
+		if group, ok := f.Value.([]Field); ok && len(group) == 0 {
+			continue
+		}
 		buf = append(buf, ',')
 		buf = appendJSONStringTo(buf, f.Key)
 		buf = append(buf, ':')

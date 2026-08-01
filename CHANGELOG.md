@@ -67,6 +67,9 @@ surface reaching it is much smaller, and several long-standing gaps are closed.
   a bridge say a record genuinely has no timestamp, and the encoders omit it
   rather than substituting the moment of encoding.
 
+- The JSON encoder emitted an empty group as `"g":{}` where the text and console
+  encoders omitted it, and where the rule slog states for handlers says to omit
+  it. All three now agree.
 - Caller resolution asked the runtime for 16 stack frames on every entry when
   the answer is three or four up. It now walks a short window first and only
   goes deeper if that window was all internal frames, which cut the cost of

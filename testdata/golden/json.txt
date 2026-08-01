@@ -1,0 +1,40 @@
+--- plain
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"server started"}
+--- empty message
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"","only":"fields"}
+--- field types
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"types","str":"value","int":-7,"uint":18446744073709551615,"float":1.5,"bool":true,"dur":"1.5s","time":"2026-08-01T09:41:22Z","bin":"dead","err":"connection refused","nil":null}
+--- groups
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"request","id":"req-42","http":{"method":"GET","status":200,"client":{"ip":"10.0.0.1"}}}
+--- empty group
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"m"}
+--- caller
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"with call site","file":"main.go","line":42}
+--- caller and fields
+{"timestamp":"2026-08-01T09:41:22Z","level":"WARN","message":"slow","file":"handler.go","line":118,"took":"2s"}
+--- no timestamp
+{"level":"INFO","message":"a record with no time"}
+--- no timestamp with caller
+{"level":"INFO","message":"no time, has caller","file":"bridge.go","line":7}
+--- control characters
+{"timestamp":"2026-08-01T09:41:22Z","level":"ERROR","message":"line one\nline two\ttabbed","user":"eve\n2020-01-01 00:00:00 - [ERROR] forged"}
+--- quotes and backslash
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"say \"hi\"\\ok","path":"C:\\tmp\\x"}
+--- invalid utf8
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"bad � byte","k":"a�b"}
+--- spaces in values
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"note","text":"with spaces","empty":""}
+--- level TRACE
+{"timestamp":"2026-08-01T09:41:22Z","level":"TRACE","message":"message"}
+--- level DEBUG
+{"timestamp":"2026-08-01T09:41:22Z","level":"DEBUG","message":"message"}
+--- level INFO
+{"timestamp":"2026-08-01T09:41:22Z","level":"INFO","message":"message"}
+--- level WARN
+{"timestamp":"2026-08-01T09:41:22Z","level":"WARN","message":"message"}
+--- level ERROR
+{"timestamp":"2026-08-01T09:41:22Z","level":"ERROR","message":"message"}
+--- level PANIC
+{"timestamp":"2026-08-01T09:41:22Z","level":"PANIC","message":"message"}
+--- level FATAL
+{"timestamp":"2026-08-01T09:41:22Z","level":"FATAL","message":"message"}
